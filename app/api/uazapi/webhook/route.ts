@@ -4,7 +4,9 @@ import { createUazapiAdapter } from "@/lib/server/uazapi";
 
 export async function POST(request: NextRequest) {
   const configuredSecret = process.env.UAZAPI_WEBHOOK_SECRET;
-  const receivedSecret = request.headers.get("x-webhook-secret");
+  const receivedHeader = request.headers.get("x-webhook-secret");
+  const receivedQuery = new URL(request.url).searchParams.get("secret");
+  const receivedSecret = receivedHeader ?? receivedQuery;
 
   if (!configuredSecret && process.env.NODE_ENV === "production") {
     return NextResponse.json(
