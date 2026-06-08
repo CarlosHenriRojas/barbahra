@@ -1,0 +1,16 @@
+.next/
+node_modules/
+out/
+dist/
+coverage/
+.env
+.env.local
+.env.production
+.vercel/
+*.tsbuildinfo
+.codex-dev-server*.log
+.codex-run-dev.cmd
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
