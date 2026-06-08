@@ -137,12 +137,23 @@ export function createUazapiAdapter() {
 
     handleWebhookEvent(payload: unknown): UazapiWebhookResult {
       const raw = webhookSchema.parse(payload);
-      const fromPhone = extractString(raw, ["from", "phone", "number", "sender", "remoteJid"]);
+      const fromPhone = extractString(raw, [
+        "message.sender_pn",
+        "chat.phone",
+        "from",
+        "phone",
+        "number",
+        "sender",
+        "remoteJid"
+      ]);
       const messageText = extractString(raw, [
-        "message",
+        "message.vote",
+        "message.buttonOrListid",
+        "message.content.selectedDisplayText",
+        "message.content.selectedID",
+        "chat.wa_lastMessageTextVote",
         "text",
         "body",
-        "content",
         "caption",
         "buttonText",
         "selectedButtonId",
@@ -152,7 +163,7 @@ export function createUazapiAdapter() {
         "message.buttonsResponseMessage.selectedButtonId",
         "message.buttonsResponseMessage.selectedDisplayText"
       ]);
-      const messageId = extractString(raw, ["messageId", "id", "key.id"]);
+      const messageId = extractString(raw, ["message.messageid", "message.id", "messageId", "id", "key.id"]);
 
       return {
         raw,
