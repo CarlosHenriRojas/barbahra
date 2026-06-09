@@ -44,6 +44,7 @@ export const campaignSnapshotSchema = z.object({
       label: z.string().min(1),
       body: z.string().min(1),
       messageType: z.enum(["text", "buttons"]).default("buttons"),
+      allocationPercent: z.number().int().min(0).max(100).default(0),
       buttons: z.array(
         z.object({
           id: z.string().min(1),

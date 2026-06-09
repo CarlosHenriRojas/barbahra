@@ -1,4 +1,4 @@
-import { renderMessage, selectVariantForIndex } from "./message";
+import { renderMessage, selectVariantByAllocation } from "./message";
 import { normalizeVariantButtons } from "./buttons";
 import type {
   Campaign,
@@ -12,12 +12,14 @@ export function buildCampaignQueue({
   campaign,
   contacts,
   variants,
-  optedOutPhones
+  optedOutPhones,
+  random = Math.random
 }: {
   campaign: Campaign;
   contacts: Contact[];
   variants: MessageVariant[];
   optedOutPhones: Set<string>;
+  random?: () => number;
 }) {
   const eligible = eligibleContacts(contacts, optedOutPhones);
   const schedule = buildQueueSchedule(eligible.length, {
@@ -26,7 +28,7 @@ export function buildCampaignQueue({
   });
 
   return eligible.reduce<MessageJob[]>((jobs, contact, index) => {
-    const variant = selectVariantForIndex(variants, index);
+    const variant = selectVariantByAllocation(variants, random);
     if (!variant) return jobs;
 
     const normalizedVariant = normalizeVariantButtons(variant);

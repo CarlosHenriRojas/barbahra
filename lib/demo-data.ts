@@ -63,6 +63,7 @@ export const demoVariants: MessageVariant[] = [
     label: "Upsell consultivo",
     body: "Olá, {{nome}}. Vi que você comprou {{produto_comprado}} e tenho uma condição especial para entrar no {{upsell}}.",
     messageType: "buttons",
+    allocationPercent: 50,
     buttons: [
       { id: "know_more", label: "Quero saber mais", type: "reply" },
       { id: "talk_to_agent", label: "Falar com suporte", type: "reply" },
@@ -74,6 +75,7 @@ export const demoVariants: MessageVariant[] = [
     label: "Upsell direto",
     body: "Oi, {{nome}}. Posso te mandar os detalhes do {{upsell}} como próximo passo depois do {{produto_comprado}}?",
     messageType: "buttons",
+    allocationPercent: 50,
     buttons: [
       { id: "yes", label: "Pode enviar", type: "reply" },
       optOutButton

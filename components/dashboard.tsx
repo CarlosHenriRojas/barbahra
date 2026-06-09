@@ -32,6 +32,7 @@ import {
   normalizeSendingConfig
 } from "@/lib/queue";
 import { guessColumn, mapRowsToContacts, parseSpreadsheet } from "@/lib/spreadsheet";
+import { renderMessage } from "@/lib/message";
 import type {
   Campaign,
   ColumnMapping,
@@ -40,12 +41,13 @@ import type {
   ImportedRow,
   MessageButton,
   MessageJob,
+  SystemLogEntry,
   MessageVariant
 } from "@/lib/types";
 import { createBrowserSupabaseClient } from "@/lib/supabase/browser";
 import { verifyContactsForQueueWithProvider } from "@/lib/whatsapp";
 
-type View = "home" | "campaigns" | "import" | "messages" | "queue";
+type View = "home" | "campaigns" | "import" | "messages" | "queue" | "logs";
 
 type SavedCampaignSummary = Campaign;
 
@@ -69,7 +71,8 @@ const statusLabels: Record<string, string> = {
   error: "Erro",
   replied: "Respondido",
   opt_out: "Opt-out",
-  no_whatsapp: "Sem WhatsApp"
+  no_whatsapp: "Sem WhatsApp",
+  webhook: "Webhook"
 };
 
 const whatsappLabels: Record<string, string> = {
@@ -102,6 +105,8 @@ export function Dashboard() {
   });
   const [importFileName, setImportFileName] = useState("");
   const [optedOutPhones, setOptedOutPhones] = useState<Set<string>>(new Set());
+  const [systemLogs, setSystemLogs] = useState<SystemLogEntry[]>([]);
+  const [loadingLogs, setLoadingLogs] = useState(false);
   const [verifyingWhatsapp, setVerifyingWhatsapp] = useState(false);
   const [savedCampaigns, setSavedCampaigns] = useState<SavedCampaignSummary[]>([]);
   const [loadingSavedCampaigns, setLoadingSavedCampaigns] = useState(false);
@@ -148,6 +153,8 @@ export function Dashboard() {
         resetCurrentCampaign();
         setSavedCampaigns([]);
         setJobs([]);
+        setSystemLogs([]);
+        setOptedOutPhones(new Set());
       }
     });
 
@@ -235,6 +242,53 @@ export function Dashboard() {
     }
   }, [authFetch]);
 
+  const refreshGlobalOptOuts = useCallback(async () => {
+    try {
+      const response = await authFetch("/api/opt-outs");
+      const data = (await response.json()) as {
+        ok?: boolean;
+        optOuts?: Array<{ phone: string }>;
+        error?: string;
+      };
+
+      if (response.ok && data.optOuts) {
+        const phones = new Set(data.optOuts.map((optOut) => String(optOut.phone)));
+        setOptedOutPhones(phones);
+        setContacts((current) => applyOptOutBlocklist(current, phones));
+        return phones;
+      }
+
+      setPersistenceStatus(data.error ?? "Não foi possível carregar opt-outs globais.");
+    } catch {
+      setPersistenceStatus("Não foi possível carregar opt-outs globais agora.");
+    }
+
+    return new Set<string>();
+  }, [authFetch]);
+
+  const refreshSystemLogs = useCallback(async () => {
+    setLoadingLogs(true);
+    try {
+      const response = await authFetch("/api/logs");
+      const data = (await response.json()) as {
+        ok?: boolean;
+        logs?: SystemLogEntry[];
+        error?: string;
+      };
+
+      if (response.ok && data.logs) {
+        setSystemLogs(data.logs);
+        return;
+      }
+
+      setPersistenceStatus(data.error ?? "Não foi possível carregar logs.");
+    } catch {
+      setPersistenceStatus("Não foi possível carregar logs agora.");
+    } finally {
+      setLoadingLogs(false);
+    }
+  }, [authFetch]);
+
   useEffect(() => {
     if (!signedIn) {
       setBootstrapping(false);
@@ -261,9 +315,10 @@ export function Dashboard() {
         if (response.ok && data.campaigns) {
           setSavedCampaigns(data.campaigns);
           setPersistenceStatus(data.campaigns.length ? "Campanhas carregadas do Supabase." : "");
+          const blockedPhones = await refreshGlobalOptOuts();
 
           if (isUuid(initialState.campaignId)) {
-            await loadCampaignSnapshot(initialState.campaignId, initialState.view, false);
+            await loadCampaignSnapshot(initialState.campaignId, initialState.view, false, blockedPhones);
           } else {
             resetCurrentCampaign();
             setUrlState(initialState.view, "");
@@ -290,12 +345,24 @@ export function Dashboard() {
     };
     // The bootstrap should run on auth changes; the local helpers intentionally read current state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authFetch, signedIn]);
+  }, [authFetch, refreshGlobalOptOuts, signedIn]);
+
+  useEffect(() => {
+    if (!signedIn || activeView !== "logs") return;
+
+    void refreshSystemLogs();
+    const timer = window.setInterval(() => {
+      void refreshSystemLogs();
+    }, 8000);
+
+    return () => window.clearInterval(timer);
+  }, [activeView, refreshSystemLogs, signedIn]);
 
   async function loadCampaignSnapshot(
     campaignId: string,
     nextView: View = "campaigns",
-    syncUrl = true
+    syncUrl = true,
+    blocklist = optedOutPhones
   ) {
     const response = await authFetch(`/api/campaigns/${campaignId}`);
     const data = (await response.json()) as CampaignSnapshot & { ok?: boolean; error?: string };
@@ -306,7 +373,7 @@ export function Dashboard() {
     }
 
     setCampaign(data.campaign);
-    setContacts(data.contacts);
+    setContacts(applyOptOutBlocklist(data.contacts, blocklist));
     setVariants(data.variants.length ? data.variants : createDefaultVariants());
     setJobs(data.jobs);
     setHeaders([]);
@@ -547,6 +614,7 @@ export function Dashboard() {
         ok?: boolean;
         importedCount?: number;
         skippedDuplicatesCount?: number;
+        blockedOptOutCount?: number;
         error?: string;
       };
 
@@ -558,7 +626,7 @@ export function Dashboard() {
       setPersistenceStatus(
         `Importação salva: ${data.importedCount ?? 0} contato(s), ${
           data.skippedDuplicatesCount ?? 0
-        } duplicado(s) ignorado(s).`
+        } duplicado(s) ignorado(s), ${data.blockedOptOutCount ?? 0} opt-out(s) bloqueado(s).`
       );
       await loadCampaignSnapshot(campaign.id, "import");
     } catch {
@@ -583,6 +651,7 @@ export function Dashboard() {
         label: `Variação ${current.length + 1}`,
         body: "Olá, {{nome}}. Posso te mandar uma condição especial do {{upsell}}?",
         messageType: "buttons",
+        allocationPercent: current.length ? 0 : 100,
         buttons: [
           { id: crypto.randomUUID(), label: "Quero saber mais", type: "reply" },
           optOutButton
@@ -680,7 +749,10 @@ export function Dashboard() {
     setCampaign((current) => ({ ...current, status: "cancelled" }));
   }
 
-  function markManualOptOut(contactId: string) {
+  async function markManualOptOut(contactId: string) {
+    const selectedContact = contacts.find((contact) => contact.id === contactId);
+    if (!selectedContact) return;
+
     setContacts((current) =>
       current.map((contact) => {
         if (contact.id !== contactId) return contact;
@@ -692,9 +764,37 @@ export function Dashboard() {
       current.map((job) =>
         job.contactId === contactId && job.status === "queued"
           ? { ...job, status: "opt_out", error: "Opt-out registrado" }
-          : job
+        : job
       )
     );
+
+    try {
+      const response = await authFetch("/api/opt-outs", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          phone: selectedContact.phone,
+          reason: "manual",
+          source: "dashboard"
+        })
+      });
+      const data = (await response.json()) as { ok?: boolean; error?: string };
+
+      if (!response.ok || !data.ok) {
+        setPersistenceStatus(data.error ?? "Não foi possível registrar opt-out.");
+        return;
+      }
+
+      setPersistenceStatus("Opt-out global registrado.");
+      const blockedPhones = await refreshGlobalOptOuts();
+      if (isUuid(campaign.id)) {
+        await loadCampaignSnapshot(campaign.id, activeView, true, blockedPhones);
+      }
+    } catch {
+      setPersistenceStatus("Não foi possível registrar opt-out agora.");
+    }
   }
 
   async function syncCampaignStatus(
@@ -854,6 +954,12 @@ export function Dashboard() {
             label="Fila"
             onClick={() => navigateTo("queue")}
           />
+          <NavItem
+            active={activeView === "logs"}
+            icon={<RefreshCw size={18} />}
+            label="Logs"
+            onClick={() => navigateTo("logs")}
+          />
         </nav>
 
         <div className="sidebar-footer">
@@ -963,6 +1069,13 @@ export function Dashboard() {
             onCancel={cancelCampaign}
             onPause={pauseCampaign}
             onStart={startCampaign}
+          />
+        )}
+        {activeView === "logs" && (
+          <LogsView
+            logs={systemLogs}
+            loading={loadingLogs}
+            onRefresh={refreshSystemLogs}
           />
         )}
       </section>
@@ -1358,7 +1471,7 @@ function ImportView({
   onDeleteContact: (contactId: string) => void | Promise<void>;
   onFileUpload: (event: ChangeEvent<HTMLInputElement>) => void;
   onMappingChange: (mapping: ColumnMapping) => void;
-  onOptOut: (contactId: string) => void;
+  onOptOut: (contactId: string) => void | Promise<void>;
 }) {
   return (
     <>
@@ -1456,7 +1569,7 @@ function ContactsTable({
 }: {
   contacts: Contact[];
   onDeleteContact: (contactId: string) => void | Promise<void>;
-  onOptOut: (contactId: string) => void;
+  onOptOut: (contactId: string) => void | Promise<void>;
 }) {
   return (
     <section className="section">
@@ -1543,7 +1656,16 @@ function MessagesView({
   onSaveCampaign: () => void | Promise<void>;
   onUpdateVariant: (id: string, patch: Partial<MessageVariant>) => void;
 }) {
-  const previewContact = contacts.find((contact) => contact.errors.length === 0) ?? contacts[0];
+  const [previewContactId, setPreviewContactId] = useState("");
+  const [pressedButtons, setPressedButtons] = useState<Record<string, string>>({});
+  const previewContact =
+    contacts.find((contact) => contact.id === previewContactId) ??
+    contacts.find((contact) => contact.errors.length === 0) ??
+    contacts[0];
+  const allocationTotal = variants.reduce(
+    (sum, variant) => sum + (variant.allocationPercent ?? 0),
+    0
+  );
 
   function updateButton(
     variant: MessageVariant,
@@ -1573,6 +1695,21 @@ function MessagesView({
     });
   }
 
+  function buttonValuePlaceholder(type: MessageButton["type"]) {
+    if (type === "url") return "https://...";
+    if (type === "call") return "+5511999999999";
+    if (type === "copy") return "Código ou texto";
+    return "";
+  }
+
+  function describeButtonAction(button: MessageButton) {
+    if (button.isOptOut) return "Registra opt-out global";
+    if (button.type === "url") return `Abre URL: ${button.value || "sem URL definida"}`;
+    if (button.type === "call") return `Inicia ligação: ${button.value || "sem telefone definido"}`;
+    if (button.type === "copy") return `Copia: ${button.value || "sem valor definido"}`;
+    return `Resposta enviada: ${button.label}`;
+  }
+
   function removeButton(variant: MessageVariant, buttonId: string) {
     onUpdateVariant(variant.id, {
       buttons: ensureOptOutButton(
@@ -1586,6 +1723,9 @@ function MessagesView({
       <div className="section-header">
         <h2>Variações</h2>
         <div className="stack">
+          <span className={`status ${allocationTotal === 100 ? "completed" : "paused"}`}>
+            {allocationTotal}% distribuído
+          </span>
           <button
             className="button"
             type="button"
@@ -1630,26 +1770,80 @@ function MessagesView({
                 </select>
               </div>
               <div className="field">
-                <label>Prévia</label>
+                <label>Percentual</label>
                 <input
-                  readOnly
-                  value={
-                    previewContact
-                      ? variant.body
-                          .replaceAll("{{nome}}", previewContact.name)
-                          .replaceAll("{{produto_comprado}}", fieldValue(previewContact, ["produto_comprado", "produto comprado", "produto"]) ?? "")
-                          .replaceAll("{{upsell}}", fieldValue(previewContact, ["upsell", "oferta"]) ?? "")
-                      : ""
+                  min={0}
+                  max={100}
+                  type="number"
+                  value={variant.allocationPercent ?? 0}
+                  onChange={(event) =>
+                    onUpdateVariant(variant.id, {
+                      allocationPercent: Math.min(
+                        100,
+                        Math.max(0, Number(event.target.value) || 0)
+                      )
+                    })
                   }
                 />
               </div>
             </div>
+            {!!contacts.length && (
+              <div className="field">
+                <label>Contato de teste</label>
+                <select
+                  value={previewContact?.id ?? ""}
+                  onChange={(event) => setPreviewContactId(event.target.value)}
+                >
+                  {contacts.map((contact) => (
+                    <option key={contact.id} value={contact.id}>
+                      {contact.name} - {contact.phone}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
             <div className="field">
               <label>Mensagem</label>
               <textarea
                 value={variant.body}
                 onChange={(event) => onUpdateVariant(variant.id, { body: event.target.value })}
               />
+            </div>
+            <div className="message-preview">
+              <strong>Prévia</strong>
+              <p>
+                {previewContact
+                  ? renderMessage(variant.body, previewContact).text
+                  : "Importe contatos para testar variáveis."}
+              </p>
+              {variant.messageType === "buttons" && (
+                <div className="preview-buttons">
+                  {ensureOptOutButton(variant.buttons).map((button) => (
+                    <button
+                      className="button"
+                      type="button"
+                      key={button.id}
+                      onClick={() =>
+                        setPressedButtons((current) => ({
+                          ...current,
+                          [variant.id]: button.id
+                        }))
+                      }
+                    >
+                      {button.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {pressedButtons[variant.id] && (
+                <span className="preview-response">
+                  {describeButtonAction(
+                    ensureOptOutButton(variant.buttons).find(
+                      (button) => button.id === pressedButtons[variant.id]
+                    ) ?? optOutButton
+                  )}
+                </span>
+              )}
             </div>
             {variant.messageType === "buttons" && (
               <div className="form-grid">
@@ -1673,7 +1867,9 @@ function MessagesView({
                         disabled={button.isOptOut}
                         onChange={(event) =>
                           updateButton(variant, button.id, {
-                            type: event.target.value as MessageButton["type"]
+                            type: event.target.value as MessageButton["type"],
+                            value:
+                              event.target.value === "reply" ? undefined : button.value ?? ""
                           })
                         }
                       >
@@ -1682,6 +1878,17 @@ function MessagesView({
                         <option value="call">Telefone</option>
                         <option value="copy">Copiar</option>
                       </select>
+                      {button.type !== "reply" && !button.isOptOut ? (
+                        <input
+                          value={button.value ?? ""}
+                          placeholder={buttonValuePlaceholder(button.type)}
+                          onChange={(event) =>
+                            updateButton(variant, button.id, { value: event.target.value })
+                          }
+                        />
+                      ) : (
+                        <span className="button-value-placeholder">Resposta direta</span>
+                      )}
                       {!button.isOptOut && (
                         <button
                           className="button danger icon-only"
@@ -1811,6 +2018,61 @@ function QueueView({
   );
 }
 
+function LogsView({
+  logs,
+  loading,
+  onRefresh
+}: {
+  logs: SystemLogEntry[];
+  loading: boolean;
+  onRefresh: () => void | Promise<void>;
+}) {
+  return (
+    <section className="section">
+      <div className="section-header">
+        <h2>Logs do sistema</h2>
+        <button className="button" type="button" onClick={onRefresh} disabled={loading}>
+          <RefreshCw size={18} />
+          {loading ? "Atualizando" : "Atualizar"}
+        </button>
+      </div>
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Data</th>
+              <th>Tipo</th>
+              <th>Evento</th>
+              <th>Telefone</th>
+              <th>Campanha</th>
+              <th>Detalhe</th>
+            </tr>
+          </thead>
+          <tbody>
+            {logs.map((log) => (
+              <tr key={log.id}>
+                <td>{formatDateTime(log.createdAt)}</td>
+                <td>
+                  <StatusBadge value={log.type} />
+                </td>
+                <td>{log.title}</td>
+                <td>{log.phone ?? "-"}</td>
+                <td>{log.campaignName ?? "-"}</td>
+                <td>{log.detail}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {!logs.length && (
+        <div className="empty">
+          {loading ? "Carregando logs..." : "Nenhum log encontrado."}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function formatDateTime(value: string) {
   return new Intl.DateTimeFormat("pt-BR", {
     hour: "2-digit",
@@ -1848,6 +2110,7 @@ function createDefaultVariants() {
   return demoVariants.map((variant) => ({
     ...variant,
     id: crypto.randomUUID(),
+    allocationPercent: variant.allocationPercent ?? Math.round(100 / demoVariants.length),
     buttons: variant.buttons.map((button) => ({
       ...button,
       id: button.isOptOut ? "opt_out" : crypto.randomUUID()
@@ -1860,7 +2123,8 @@ function parseView(value: string | null): View {
     value === "campaigns" ||
     value === "import" ||
     value === "messages" ||
-    value === "queue"
+    value === "queue" ||
+    value === "logs"
     ? value
     : "campaigns";
 }

@@ -38,13 +38,29 @@ export async function POST(
         .filter((phone): phone is string => Boolean(phone))
     );
 
+    const blockedPhonesResult = await supabase
+      .from("opt_outs")
+      .select("phone")
+      .or(`organization_id.eq.${organizationId},organization_id.is.null`);
+
+    if (blockedPhonesResult.error) throw blockedPhonesResult.error;
+
+    const blockedPhones = new Set(
+      (blockedPhonesResult.data ?? []).map((row) => String(row.phone))
+    );
+
     const validUniqueContacts = payload.contacts.filter(
       (contact) => contact.errors.length === 0 && !contact.duplicate
     );
     const contactsToImport = validUniqueContacts.filter(
-      (contact) => !existingPhones.has(contact.phone)
+      (contact) => !existingPhones.has(contact.phone) && !blockedPhones.has(contact.phone)
     );
-    const skippedDuplicatesCount = validUniqueContacts.length - contactsToImport.length;
+    const skippedDuplicatesCount = validUniqueContacts.filter(
+      (contact) => existingPhones.has(contact.phone) && !blockedPhones.has(contact.phone)
+    ).length;
+    const blockedOptOutCount = validUniqueContacts.filter((contact) =>
+      blockedPhones.has(contact.phone)
+    ).length;
 
     const batch = await supabase
       .from("import_batches")
@@ -52,7 +68,7 @@ export async function POST(
         campaign_id: campaignId,
         file_name: payload.fileName,
         imported_count: contactsToImport.length,
-        skipped_duplicates_count: skippedDuplicatesCount
+        skipped_duplicates_count: skippedDuplicatesCount + blockedOptOutCount
       })
       .select("id")
       .single();
@@ -110,6 +126,7 @@ export async function POST(
       ok: true,
       importedCount: contactsToImport.length,
       skippedDuplicatesCount,
+      blockedOptOutCount,
       importBatchId: batch.data.id
     });
   } catch (error) {

@@ -495,7 +495,7 @@ tr:hover td {
 
 .button-row {
   display: grid;
-  grid-template-columns: 22px minmax(160px, 1fr) minmax(120px, 160px) 40px;
+  grid-template-columns: 22px minmax(150px, 1fr) minmax(120px, 150px) minmax(150px, 1fr) 40px;
   gap: 8px;
   align-items: center;
   border: 1px solid var(--line);
@@ -513,6 +513,44 @@ tr:hover td {
   padding: 8px 10px;
   background: #0a101b;
   color: var(--ink);
+}
+
+.button-value-placeholder {
+  color: var(--muted);
+  font-size: 13px;
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+}
+
+.message-preview {
+  display: grid;
+  gap: 10px;
+}
+
+.message-preview strong {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.message-preview p {
+  margin: 0;
+  color: var(--soft);
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.preview-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.preview-response {
+  color: var(--green);
+  font-size: 13px;
+  font-weight: 750;
 }
 
 .login-shell {
@@ -556,7 +594,7 @@ tr:hover td {
   }
 
   .nav-list {
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(6, minmax(0, 1fr));
   }
 
   .nav-item {
@@ -599,6 +637,11 @@ tr:hover td {
 
   .button-row {
     grid-template-columns: 22px 1fr;
+  }
+
+  .button-value-placeholder {
+    min-height: 0;
+    padding: 0;
   }
 
   .grid.columns-4 {

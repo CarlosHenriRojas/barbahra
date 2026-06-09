@@ -27,6 +27,25 @@ describe("buildCampaignQueue", () => {
     expect(jobs[0].contactId).toBe(demoContacts[1].id);
   });
 
+  it("selects variants using allocation percentages", () => {
+    const jobs = buildCampaignQueue({
+      campaign: demoCampaign,
+      contacts: demoContacts,
+      variants: [
+        { ...demoVariants[0], allocationPercent: 100 },
+        { ...demoVariants[1], allocationPercent: 0 }
+      ],
+      optedOutPhones: new Set(),
+      random: () => 0.99
+    });
+
+    expect(jobs.map((job) => job.variantId)).toEqual([
+      demoVariants[0].id,
+      demoVariants[0].id,
+      demoVariants[0].id
+    ]);
+  });
+
   it("schedules jobs using the configured interval range", () => {
     const schedule = buildQueueSchedule(3, {
       config: demoCampaign.sendingConfig,

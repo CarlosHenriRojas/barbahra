@@ -65,7 +65,7 @@ export async function GET(
         .eq("campaign_id", campaignId),
       supabase
         .from("message_variants")
-        .select("id,label,body,message_type,buttons")
+        .select("id,label,body,message_type,buttons,allocation_percent")
         .eq("campaign_id", campaignId)
         .order("created_at", { ascending: true }),
       supabase
@@ -131,15 +131,20 @@ export async function GET(
       duplicate: boolean;
     }>);
 
-    const variants = (variantsResult.data ?? []).map(
+    const mappedVariants = (variantsResult.data ?? []).map(
       (variant): MessageVariant => ({
         id: String(variant.id),
         label: String(variant.label),
         body: String(variant.body),
         messageType: variant.message_type as MessageType,
-        buttons: readButtons(variant.buttons)
+        buttons: readButtons(variant.buttons),
+        allocationPercent:
+          typeof variant.allocation_percent === "number"
+            ? Number(variant.allocation_percent)
+            : 0
       })
     );
+    const variants = withDefaultAllocation(mappedVariants);
 
     const jobs = (jobsResult.data ?? []).map((job): MessageJob => {
       const campaignContact = campaignContactById.get(String(job.campaign_contact_id));
@@ -220,6 +225,7 @@ export async function PATCH(
         label: variant.label,
         body: variant.body,
         message_type: variant.messageType,
+        allocation_percent: variant.allocationPercent,
         buttons: variant.buttons
       };
 
@@ -283,4 +289,17 @@ function isUuid(value: string) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
     value
   );
+}
+
+function withDefaultAllocation(variants: MessageVariant[]) {
+  const total = variants.reduce((sum, variant) => sum + variant.allocationPercent, 0);
+  if (total > 0 || !variants.length) return variants;
+
+  const base = Math.floor(100 / variants.length);
+  const remainder = 100 - base * variants.length;
+
+  return variants.map((variant, index) => ({
+    ...variant,
+    allocationPercent: base + (index < remainder ? 1 : 0)
+  }));
 }

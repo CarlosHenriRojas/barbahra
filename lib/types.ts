@@ -66,6 +66,17 @@ export type MessageVariant = {
   body: string;
   messageType: MessageType;
   buttons: MessageButton[];
+  allocationPercent: number;
+};
+
+export type SystemLogEntry = {
+  id: string;
+  type: "sent" | "error" | "webhook" | "opt_out";
+  title: string;
+  detail: string;
+  phone?: string;
+  campaignName?: string;
+  createdAt: string;
 };
 
 export type MessageJob = {

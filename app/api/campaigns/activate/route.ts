@@ -62,6 +62,7 @@ export async function POST(request: NextRequest) {
         label: variant.label,
         body: variant.body,
         message_type: variant.messageType,
+        allocation_percent: variant.allocationPercent,
         buttons: variant.buttons
       };
       const savedVariant = isUuid(variant.id)
@@ -86,17 +87,27 @@ export async function POST(request: NextRequest) {
     const campaignContactByContactId = new Map(
       ((existingLinks.data ?? []) as LinkedContactRow[]).map((link) => [link.contact_id, link.id])
     );
+    const blockedContactIds = new Set(
+      ((existingLinks.data ?? []) as LinkedContactRow[])
+        .filter((link) => {
+          const contact = Array.isArray(link.contacts) ? link.contacts[0] : link.contacts;
+          return contact?.phone && blockedPhones.has(String(contact.phone));
+        })
+        .map((link) => link.contact_id)
+    );
 
     for (const contact of payload.contacts) {
       if (!isUuid(contact.id)) continue;
 
       const contactStatus =
+        blockedPhones.has(contact.phone) ||
         contact.duplicate ||
         contact.status === "opt_out" ||
         contact.status === "no_whatsapp" ||
-        blockedPhones.has(contact.phone) ||
         contact.errors.length > 0
-          ? contact.status
+          ? blockedPhones.has(contact.phone)
+            ? "opt_out"
+            : contact.status
           : "queued";
 
       const contactUpdate = await supabase
@@ -139,7 +150,9 @@ export async function POST(request: NextRequest) {
       const campaignContactId = campaignContactByContactId.get(job.contactId);
       const messageVariantId = variantMap.get(job.variantId);
 
-      if (!campaignContactId || !messageVariantId) return jobs;
+      if (!campaignContactId || !messageVariantId || blockedContactIds.has(job.contactId)) {
+        return jobs;
+      }
 
       jobs.push({
         campaign_id: payload.campaignId,

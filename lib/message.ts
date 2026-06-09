@@ -51,6 +51,30 @@ export function selectVariantForIndex(
   return variants[index % variants.length];
 }
 
+export function selectVariantByAllocation(
+  variants: MessageVariant[],
+  random = Math.random
+): MessageVariant | undefined {
+  if (!variants.length) return undefined;
+
+  const weights = variants.map((variant) => Math.max(0, variant.allocationPercent ?? 0));
+  const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
+
+  if (totalWeight <= 0) {
+    return variants[Math.floor(random() * variants.length)] ?? variants[0];
+  }
+
+  const target = random() * totalWeight;
+  let cursor = 0;
+
+  for (let index = 0; index < variants.length; index += 1) {
+    cursor += weights[index];
+    if (target < cursor) return variants[index];
+  }
+
+  return variants[variants.length - 1];
+}
+
 export function extractTemplateVariables(template: string) {
   return Array.from(template.matchAll(variablePattern), (match) => match[1]);
 }

@@ -40,6 +40,7 @@ export async function POST(request: NextRequest) {
         label: variant.label,
         body: variant.body,
         message_type: variant.messageType,
+        allocation_percent: variant.allocationPercent,
         buttons: variant.buttons
       });
       if (insertedVariant.error) throw insertedVariant.error;
