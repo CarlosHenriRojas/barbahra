@@ -71,7 +71,7 @@ export type MessageVariant = {
 
 export type SystemLogEntry = {
   id: string;
-  type: "sent" | "error" | "webhook" | "opt_out";
+  type: "sent" | "error" | "webhook" | "opt_out" | "campaign" | "worker";
   title: string;
   detail: string;
   phone?: string;

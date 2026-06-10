@@ -72,7 +72,9 @@ const statusLabels: Record<string, string> = {
   replied: "Respondido",
   opt_out: "Opt-out",
   no_whatsapp: "Sem WhatsApp",
-  webhook: "Webhook"
+  webhook: "Webhook",
+  campaign: "Campanha",
+  worker: "Worker"
 };
 
 const whatsappLabels: Record<string, string> = {
@@ -289,6 +291,26 @@ export function Dashboard() {
     }
   }, [authFetch]);
 
+  const refreshOpenCampaign = useCallback(async () => {
+    if (!isUuid(campaign.id)) return;
+
+    try {
+      const response = await authFetch(`/api/campaigns/${campaign.id}`);
+      if (!response.ok) return;
+
+      const data = (await response.json()) as CampaignSnapshot & { ok?: boolean };
+      if (!data.campaign) return;
+
+      // Lightweight live refresh: only status-bearing data, so it never clobbers
+      // in-progress edits (variants, mapping) or the current view.
+      setCampaign(data.campaign);
+      setContacts(applyOptOutBlocklist(data.contacts ?? [], optedOutPhones));
+      setJobs(data.jobs ?? []);
+    } catch {
+      // Silent: a failed background refresh shouldn't disrupt the operator.
+    }
+  }, [authFetch, campaign.id, optedOutPhones]);
+
   useEffect(() => {
     if (!signedIn) {
       setBootstrapping(false);
@@ -357,6 +379,20 @@ export function Dashboard() {
 
     return () => window.clearInterval(timer);
   }, [activeView, refreshSystemLogs, signedIn]);
+
+  // Keep the queue and home dashboard in sync with the backend worker while a
+  // campaign is running, so statuses move from "Na fila" to "Enviado" live.
+  useEffect(() => {
+    if (!signedIn) return;
+    if (activeView !== "queue" && activeView !== "home") return;
+    if (!isUuid(campaign.id) || campaign.status !== "running") return;
+
+    const timer = window.setInterval(() => {
+      void refreshOpenCampaign();
+    }, 6000);
+
+    return () => window.clearInterval(timer);
+  }, [activeView, campaign.id, campaign.status, refreshOpenCampaign, signedIn]);
 
   async function loadCampaignSnapshot(
     campaignId: string,
@@ -1017,6 +1053,8 @@ export function Dashboard() {
             metrics={metrics}
             onGoToImport={() => navigateTo("import")}
             onGoToQueue={() => navigateTo("queue")}
+            onRefresh={refreshOpenCampaign}
+            canRefresh={isUuid(campaign.id)}
           />
         )}
         {activeView === "campaigns" && (
@@ -1069,6 +1107,7 @@ export function Dashboard() {
             onCancel={cancelCampaign}
             onPause={pauseCampaign}
             onStart={startCampaign}
+            onRefresh={refreshOpenCampaign}
           />
         )}
         {activeView === "logs" && (
@@ -1175,18 +1214,29 @@ function HomeView({
   importFileName,
   metrics,
   onGoToImport,
-  onGoToQueue
+  onGoToQueue,
+  onRefresh,
+  canRefresh
 }: {
   contacts: Contact[];
   importFileName: string;
   metrics: ReturnType<typeof calculateMetrics>;
   onGoToImport: () => void;
   onGoToQueue: () => void;
+  onRefresh: () => void | Promise<void>;
+  canRefresh: boolean;
 }) {
   const lastContacts = contacts.slice(0, 5);
 
   return (
     <>
+      <div className="section-header">
+        <h2>Visão geral</h2>
+        <button className="button" type="button" disabled={!canRefresh} onClick={onRefresh}>
+          <RefreshCw size={18} />
+          Atualizar
+        </button>
+      </div>
       <div className="grid columns-4">
         <Metric label="Planilhas importadas" value={metrics.spreadsheetsImported} />
         <Metric label="Contatos cadastrados" value={metrics.contacts} />
@@ -1927,7 +1977,8 @@ function QueueView({
   sendingConfig,
   onCancel,
   onPause,
-  onStart
+  onStart,
+  onRefresh
 }: {
   campaign: Campaign;
   jobs: MessageJob[];
@@ -1936,16 +1987,28 @@ function QueueView({
   onCancel: () => void | Promise<void>;
   onPause: () => void | Promise<void>;
   onStart: () => void | Promise<void>;
+  onRefresh: () => void | Promise<void>;
 }) {
   const contactsWithoutWhatsapp = contacts.filter(
     (contact) => contact.whatsappStatus === "invalid"
   ).length;
+  const sentCount = jobs.filter((job) => job.status === "sent").length;
+  const queuedCount = jobs.filter((job) => job.status === "queued").length;
 
   return (
     <section className="section">
       <div className="section-header">
         <h2>Fila</h2>
         <div className="stack">
+          <button
+            className="button"
+            type="button"
+            disabled={!isUuid(campaign.id)}
+            onClick={onRefresh}
+          >
+            <RefreshCw size={18} />
+            Atualizar
+          </button>
           <button
             className="button primary"
             type="button"
@@ -1972,10 +2035,12 @@ function QueueView({
       </div>
       <div className="section-body">
         <div className="notice">
+          {sentCount} enviada(s), {queuedCount} na fila.{" "}
           {contactsWithoutWhatsapp} número(s) não possuem WhatsApp e ficaram fora da fila.
           Cadência configurada: {sendingConfig.minIntervalSeconds}s a{" "}
           {sendingConfig.maxIntervalSeconds}s, entre {sendingConfig.dailyStartTime} e{" "}
           {sendingConfig.dailyEndTime}.
+          {campaign.status === "running" && " Atualizando automaticamente."}
         </div>
       </div>
       <div className="table-wrap">

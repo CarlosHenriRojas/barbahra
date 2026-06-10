@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { authErrorResponse, requireAuthenticatedRequest } from "@/lib/server/auth";
 import { campaignSnapshotSchema } from "@/lib/server/schemas";
+import {
+  isMissingAllocationPercentError,
+  withoutAllocationPercent,
+  type MessageVariantDbRow
+} from "@/lib/server/variant-compat";
 import type { CampaignStatus } from "@/lib/types";
 
 const createCampaignSchema = z.object({
@@ -35,14 +40,22 @@ export async function POST(request: NextRequest) {
     if (insertedCampaign.error) throw insertedCampaign.error;
 
     for (const variant of payload.variants ?? []) {
-      const insertedVariant = await supabase.from("message_variants").insert({
+      const row: MessageVariantDbRow = {
         campaign_id: insertedCampaign.data.id,
         label: variant.label,
         body: variant.body,
         message_type: variant.messageType,
         allocation_percent: variant.allocationPercent,
         buttons: variant.buttons
-      });
+      };
+      let insertedVariant = await supabase.from("message_variants").insert(row);
+
+      if (isMissingAllocationPercentError(insertedVariant.error)) {
+        insertedVariant = await supabase
+          .from("message_variants")
+          .insert(withoutAllocationPercent(row));
+      }
+
       if (insertedVariant.error) throw insertedVariant.error;
     }
 

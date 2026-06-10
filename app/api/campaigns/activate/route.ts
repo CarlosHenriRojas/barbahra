@@ -1,7 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { authErrorResponse, requireAuthenticatedRequest } from "@/lib/server/auth";
+import { logSystemEvent } from "@/lib/server/events";
 import { campaignSnapshotSchema } from "@/lib/server/schemas";
+import {
+  isMissingAllocationPercentError,
+  withoutAllocationPercent,
+  type MessageVariantDbRow
+} from "@/lib/server/variant-compat";
 
 const activateCampaignSchema = z.object({
   campaignId: z.string().uuid(),
@@ -57,7 +63,7 @@ export async function POST(request: NextRequest) {
 
     const variantMap = new Map<string, string>();
     for (const variant of payload.variants) {
-      const row = {
+      const row: MessageVariantDbRow = {
         campaign_id: payload.campaignId,
         label: variant.label,
         body: variant.body,
@@ -65,13 +71,30 @@ export async function POST(request: NextRequest) {
         allocation_percent: variant.allocationPercent,
         buttons: variant.buttons
       };
-      const savedVariant = isUuid(variant.id)
+      let savedVariant = isUuid(variant.id)
         ? await supabase
             .from("message_variants")
             .upsert({ id: variant.id, ...row }, { onConflict: "id" })
             .select("id")
             .single()
         : await supabase.from("message_variants").insert(row).select("id").single();
+
+      if (isMissingAllocationPercentError(savedVariant.error)) {
+        savedVariant = isUuid(variant.id)
+          ? await supabase
+              .from("message_variants")
+              .upsert(
+                { id: variant.id, ...withoutAllocationPercent(row) },
+                { onConflict: "id" }
+              )
+              .select("id")
+              .single()
+          : await supabase
+              .from("message_variants")
+              .insert(withoutAllocationPercent(row))
+              .select("id")
+              .single();
+      }
 
       if (savedVariant.error) throw savedVariant.error;
       variantMap.set(variant.id, String(savedVariant.data.id));
@@ -203,6 +226,15 @@ export async function POST(request: NextRequest) {
       .eq("organization_id", organizationId);
 
     if (campaignUpdate.error) throw campaignUpdate.error;
+
+    await logSystemEvent(supabase, {
+      organizationId,
+      campaignId: payload.campaignId,
+      type: "campaign",
+      title: "Campanha iniciada",
+      detail: `${jobsToInsert.length} mensagem(ns) entraram na fila de envio.`,
+      metadata: { queuedJobs: jobsToInsert.length }
+    });
 
     return NextResponse.json({
       ok: true,

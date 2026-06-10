@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { extractProviderMessageId } from "@/lib/server/provider-result";
 import { createUazapiAdapter } from "@/lib/server/uazapi";
+import { logSystemEvent } from "@/lib/server/events";
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
 
 type ClaimedJob = {
@@ -45,9 +46,22 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: false, error: claimed.error.message }, { status: 500 });
   }
 
+  const claimedJobs = (claimed.data ?? []) as ClaimedJob[];
+
+  // Resolve the org/name for each claimed campaign so events stay org-scoped.
+  const campaignMeta = await resolveCampaignMeta(supabase, claimedJobs);
+  const runStats = new Map<string, { sent: number; error: number }>();
+  const bumpRunStat = (orgId: string | null, key: "sent" | "error") => {
+    if (!orgId) return;
+    const current = runStats.get(orgId) ?? { sent: 0, error: 0 };
+    current[key] += 1;
+    runStats.set(orgId, current);
+  };
+
   const results = [];
 
-  for (const job of (claimed.data ?? []) as ClaimedJob[]) {
+  for (const job of claimedJobs) {
+    const meta = campaignMeta.get(job.campaign_id);
     try {
       const providerResult =
         job.message_type === "buttons"
@@ -82,6 +96,21 @@ export async function POST(request: NextRequest) {
         .update({ status: "sent" })
         .eq("id", job.campaign_contact_id);
 
+      bumpRunStat(meta?.organizationId ?? null, "sent");
+      await logSystemEvent(supabase, {
+        organizationId: meta?.organizationId ?? null,
+        campaignId: job.campaign_id,
+        type: "sent",
+        title: "Mensagem enviada",
+        detail: job.rendered_message.slice(0, 200),
+        phone: job.phone,
+        metadata: {
+          jobId: job.job_id,
+          providerMessageId,
+          messageType: job.message_type
+        }
+      });
+
       results.push({ jobId: job.job_id, status: "sent" });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown send error";
@@ -101,8 +130,31 @@ export async function POST(request: NextRequest) {
         .update({ status: "error", validation_errors: [message] })
         .eq("id", job.campaign_contact_id);
 
+      bumpRunStat(meta?.organizationId ?? null, "error");
+      await logSystemEvent(supabase, {
+        organizationId: meta?.organizationId ?? null,
+        campaignId: job.campaign_id,
+        type: "error",
+        title: "Erro no envio",
+        detail: message,
+        phone: job.phone,
+        metadata: { jobId: job.job_id, messageType: job.message_type }
+      });
+
       results.push({ jobId: job.job_id, status: "error", error: message });
     }
+  }
+
+  // One summary event per org that had activity in this run (avoids spamming the
+  // log every minute when the queue is idle).
+  for (const [orgId, stats] of runStats) {
+    await logSystemEvent(supabase, {
+      organizationId: orgId,
+      type: "worker",
+      title: "Rodada do worker",
+      detail: `${stats.sent} enviada(s), ${stats.error} erro(s).`,
+      metadata: { workerId, ...stats }
+    });
   }
 
   await completeCampaignsWithoutQueuedJobs(supabase);
@@ -110,7 +162,7 @@ export async function POST(request: NextRequest) {
   return NextResponse.json({
     ok: true,
     workerId,
-    claimed: claimed.data?.length ?? 0,
+    claimed: claimedJobs.length,
     results
   });
 }
@@ -128,12 +180,35 @@ function isAuthorized(request: NextRequest) {
   return bearer === secret || explicit === secret;
 }
 
+async function resolveCampaignMeta(
+  supabase: NonNullable<ReturnType<typeof createServiceSupabaseClient>>,
+  jobs: ClaimedJob[]
+) {
+  const meta = new Map<string, { organizationId: string | null; name: string | null }>();
+  const campaignIds = Array.from(new Set(jobs.map((job) => job.campaign_id)));
+  if (!campaignIds.length) return meta;
+
+  const campaigns = await supabase
+    .from("campaigns")
+    .select("id,organization_id,name")
+    .in("id", campaignIds);
+
+  for (const campaign of campaigns.data ?? []) {
+    meta.set(String(campaign.id), {
+      organizationId: campaign.organization_id ? String(campaign.organization_id) : null,
+      name: campaign.name ? String(campaign.name) : null
+    });
+  }
+
+  return meta;
+}
+
 async function completeCampaignsWithoutQueuedJobs(supabase: ReturnType<typeof createServiceSupabaseClient>) {
   if (!supabase) return;
 
   const runningCampaigns = await supabase
     .from("campaigns")
-    .select("id")
+    .select("id,organization_id")
     .eq("status", "running");
 
   if (runningCampaigns.error) return;
@@ -150,6 +225,14 @@ async function completeCampaignsWithoutQueuedJobs(supabase: ReturnType<typeof cr
         .from("campaigns")
         .update({ status: "completed" })
         .eq("id", campaign.id);
+
+      await logSystemEvent(supabase, {
+        organizationId: campaign.organization_id ? String(campaign.organization_id) : null,
+        campaignId: String(campaign.id),
+        type: "campaign",
+        title: "Campanha concluída",
+        detail: "Todos os envios da fila foram processados."
+      });
     }
   }
 }

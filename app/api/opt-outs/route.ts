@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { authErrorResponse, requireAuthenticatedRequest } from "@/lib/server/auth";
+import { logSystemEvent } from "@/lib/server/events";
 
 const createOptOutSchema = z.object({
   phone: z.string().min(10),
@@ -106,6 +107,19 @@ export async function POST(request: NextRequest) {
         if (jobsUpdate.error) throw jobsUpdate.error;
       }
     }
+
+    await logSystemEvent(supabase, {
+      organizationId,
+      type: "opt_out",
+      title: "Opt-out registrado",
+      detail: `${payload.reason} via ${payload.source}`,
+      phone,
+      metadata: {
+        source: payload.source,
+        reason: payload.reason,
+        matchedContacts: contactIds.length
+      }
+    });
 
     return NextResponse.json({ ok: true, phone });
   } catch (error) {

@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { authErrorResponse, requireAuthenticatedRequest } from "@/lib/server/auth";
 import { campaignSnapshotSchema } from "@/lib/server/schemas";
+import {
+  isMissingAllocationPercentError,
+  withoutAllocationPercent,
+  type MessageVariantDbRow
+} from "@/lib/server/variant-compat";
 import type {
   CampaignStatus,
   ContactStatus,
@@ -34,6 +39,15 @@ type ContactRow = {
   contact_custom_fields?: ContactFieldRow[];
 };
 
+type MessageVariantRow = {
+  id: unknown;
+  label: unknown;
+  body: unknown;
+  message_type: unknown;
+  buttons: unknown;
+  allocation_percent?: unknown;
+};
+
 const updateCampaignSchema = z.object({
   campaign: campaignSnapshotSchema.shape.campaign,
   variants: campaignSnapshotSchema.shape.variants.optional()
@@ -58,7 +72,7 @@ export async function GET(
     if (campaignResult.error) throw campaignResult.error;
     const campaignRow = campaignResult.data;
 
-    const [campaignContactsResult, variantsResult, jobsResult] = await Promise.all([
+    const [campaignContactsResult, variantsResultWithAllocation, jobsResult] = await Promise.all([
       supabase
         .from("campaign_contacts")
         .select("id,contact_id,status,validation_errors")
@@ -78,6 +92,13 @@ export async function GET(
     ]);
 
     if (campaignContactsResult.error) throw campaignContactsResult.error;
+    const variantsResult = isMissingAllocationPercentError(variantsResultWithAllocation.error)
+      ? await supabase
+          .from("message_variants")
+          .select("id,label,body,message_type,buttons")
+          .eq("campaign_id", campaignId)
+          .order("created_at", { ascending: true })
+      : variantsResultWithAllocation;
     if (variantsResult.error) throw variantsResult.error;
     if (jobsResult.error) throw jobsResult.error;
 
@@ -131,7 +152,7 @@ export async function GET(
       duplicate: boolean;
     }>);
 
-    const mappedVariants = (variantsResult.data ?? []).map(
+    const mappedVariants = ((variantsResult.data ?? []) as MessageVariantRow[]).map(
       (variant): MessageVariant => ({
         id: String(variant.id),
         label: String(variant.label),
@@ -220,7 +241,7 @@ export async function PATCH(
     if (campaignUpdate.error) throw campaignUpdate.error;
 
     for (const variant of payload.variants ?? []) {
-      const row = {
+      const row: MessageVariantDbRow = {
         campaign_id: campaignId,
         label: variant.label,
         body: variant.body,
@@ -229,11 +250,22 @@ export async function PATCH(
         buttons: variant.buttons
       };
 
-      const savedVariant = isUuid(variant.id)
+      let savedVariant = isUuid(variant.id)
         ? await supabase
             .from("message_variants")
             .upsert({ id: variant.id, ...row }, { onConflict: "id" })
         : await supabase.from("message_variants").insert(row);
+
+      if (isMissingAllocationPercentError(savedVariant.error)) {
+        savedVariant = isUuid(variant.id)
+          ? await supabase
+              .from("message_variants")
+              .upsert(
+                { id: variant.id, ...withoutAllocationPercent(row) },
+                { onConflict: "id" }
+              )
+          : await supabase.from("message_variants").insert(withoutAllocationPercent(row));
+      }
 
       if (savedVariant.error) throw savedVariant.error;
     }
