@@ -606,6 +606,9 @@ export function Dashboard() {
       return;
     }
 
+    const previousContacts = contacts;
+    const previousJobs = jobs;
+    const previousCampaign = campaign;
     const parsed = await parseSpreadsheet(file);
     const guessedName = guessColumn(parsed.headers, ["nome", "name", "cliente", "lead"]);
     const guessedPhone = guessColumn(parsed.headers, ["telefone", "phone", "celular", "whatsapp"]);
@@ -653,6 +656,9 @@ export function Dashboard() {
       };
 
       if (!response.ok || !data.ok) {
+        setContacts(previousContacts);
+        setJobs(previousJobs);
+        setCampaign(previousCampaign);
         setPersistenceStatus(data.error ?? "Não foi possível salvar a importação.");
         return;
       }
@@ -664,6 +670,9 @@ export function Dashboard() {
       );
       await loadCampaignSnapshot(campaign.id, "import");
     } catch {
+      setContacts(previousContacts);
+      setJobs(previousJobs);
+      setCampaign(previousCampaign);
       setPersistenceStatus("Não foi possível salvar a importação agora.");
     } finally {
       event.target.value = "";

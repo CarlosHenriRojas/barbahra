@@ -28,8 +28,8 @@ export const campaignSnapshotSchema = z.object({
   contacts: z.array(
     z.object({
       id: z.string(),
-      name: z.string().min(1),
-      phone: z.string().min(10),
+      name: z.string(),
+      phone: z.string(),
       company: z.string().optional(),
       customFields: z.record(z.string()),
       status: contactStatusSchema,
