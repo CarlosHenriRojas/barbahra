@@ -466,14 +466,22 @@ export function Dashboard() {
           variants
         })
       });
-      const data = (await response.json()) as { ok?: boolean; error?: string };
+      const data = (await response.json()) as {
+        ok?: boolean;
+        error?: string;
+        rescheduledJobs?: number;
+      };
 
       if (!response.ok || !data.ok) {
         setPersistenceStatus(data.error ?? "Não foi possível salvar a campanha.");
         return;
       }
 
-      setPersistenceStatus("Alterações salvas no Supabase.");
+      setPersistenceStatus(
+        data.rescheduledJobs
+          ? `Alterações salvas. ${data.rescheduledJobs} job(s) pendente(s) foram reagendados.`
+          : "Alterações salvas no Supabase."
+      );
       setSavedCampaigns((current) =>
         current.map((savedCampaign) =>
           savedCampaign.id === campaign.id ? { ...savedCampaign, ...campaign } : savedCampaign

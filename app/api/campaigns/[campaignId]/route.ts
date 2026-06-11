@@ -2,12 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { authErrorResponse, requireAuthenticatedRequest } from "@/lib/server/auth";
 import { campaignSnapshotSchema } from "@/lib/server/schemas";
+import { buildQueueSchedule } from "@/lib/queue";
 import {
   isMissingAllocationPercentError,
   withoutAllocationPercent,
   type MessageVariantDbRow
 } from "@/lib/server/variant-compat";
 import type {
+  Campaign,
   CampaignStatus,
   ContactStatus,
   MessageButton,
@@ -240,6 +242,13 @@ export async function PATCH(
 
     if (campaignUpdate.error) throw campaignUpdate.error;
 
+    const rescheduledJobs = await rescheduleQueuedJobs(supabase, campaignId, {
+      minIntervalSeconds: payload.campaign.sendingConfig.minIntervalSeconds,
+      maxIntervalSeconds: payload.campaign.sendingConfig.maxIntervalSeconds,
+      dailyStartTime: payload.campaign.sendingConfig.dailyStartTime,
+      dailyEndTime: payload.campaign.sendingConfig.dailyEndTime
+    });
+
     for (const variant of payload.variants ?? []) {
       const row: MessageVariantDbRow = {
         campaign_id: campaignId,
@@ -270,7 +279,7 @@ export async function PATCH(
       if (savedVariant.error) throw savedVariant.error;
     }
 
-    return NextResponse.json({ ok: true });
+    return NextResponse.json({ ok: true, rescheduledJobs });
   } catch (error) {
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;
@@ -334,4 +343,40 @@ function withDefaultAllocation(variants: MessageVariant[]) {
     ...variant,
     allocationPercent: base + (index < remainder ? 1 : 0)
   }));
+}
+
+async function rescheduleQueuedJobs(
+  supabase: Awaited<ReturnType<typeof requireAuthenticatedRequest>>["supabase"],
+  campaignId: string,
+  sendingConfig: Campaign["sendingConfig"]
+) {
+  const queuedJobs = await supabase
+    .from("message_jobs")
+    .select("id")
+    .eq("campaign_id", campaignId)
+    .eq("status", "queued")
+    .is("locked_at", null)
+    .order("scheduled_at", { ascending: true, nullsFirst: true })
+    .order("created_at", { ascending: true });
+
+  if (queuedJobs.error) throw queuedJobs.error;
+
+  const jobs = queuedJobs.data ?? [];
+  if (!jobs.length) return 0;
+
+  const schedule = buildQueueSchedule(jobs.length, {
+    config: sendingConfig,
+    startAt: new Date()
+  });
+
+  const updates = jobs.map((job, index) => ({
+    id: job.id,
+    scheduled_at: schedule[index]?.scheduledAt.toISOString(),
+    delay_seconds: schedule[index]?.delaySeconds
+  }));
+
+  const updated = await supabase.from("message_jobs").upsert(updates, { onConflict: "id" });
+  if (updated.error) throw updated.error;
+
+  return updates.length;
 }
