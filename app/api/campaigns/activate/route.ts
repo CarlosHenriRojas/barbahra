@@ -17,6 +17,9 @@ const activateCampaignSchema = z.object({
   jobs: campaignSnapshotSchema.shape.jobs
 });
 
+const noEligibleJobsError =
+  "A campanha nao tem contatos elegiveis para envio. Revise contatos, WhatsApp e modelos.";
+
 type LinkedContactRow = {
   id: string;
   contact_id: string;
@@ -36,7 +39,25 @@ type JobInsert = {
   delay_seconds: number | undefined;
 };
 
+type ActivationDiagnostics = {
+  requestId: string;
+  counts: {
+    payloadContacts: number;
+    payloadJobs: number;
+    payloadVariants: number;
+    existingLinks: number;
+    linkedByContactId: number;
+    linkedByPhone: number;
+    queuedJobsReceived: number;
+    jobsToInsert: number;
+  };
+  droppedJobs: Record<string, number>;
+  samples: Array<Record<string, unknown>>;
+};
+
 export async function POST(request: NextRequest) {
+  const requestId = crypto.randomUUID();
+
   try {
     const { organizationId, supabase } = await requireAuthenticatedRequest(request);
     const payload = activateCampaignSchema.parse(await request.json());
@@ -107,11 +128,12 @@ export async function POST(request: NextRequest) {
 
     if (existingLinks.error) throw existingLinks.error;
 
+    const linkedRows = (existingLinks.data ?? []) as LinkedContactRow[];
     const campaignContactByContactId = new Map(
-      ((existingLinks.data ?? []) as LinkedContactRow[]).map((link) => [link.contact_id, link.id])
+      linkedRows.map((link) => [link.contact_id, link.id])
     );
     const campaignContactByPhone = new Map(
-      ((existingLinks.data ?? []) as LinkedContactRow[])
+      linkedRows
         .map((link) => {
           const contact = Array.isArray(link.contacts) ? link.contacts[0] : link.contacts;
           return contact?.phone ? [String(contact.phone), link] : undefined;
@@ -120,7 +142,7 @@ export async function POST(request: NextRequest) {
     );
     const payloadContactById = new Map(payload.contacts.map((contact) => [contact.id, contact]));
     const blockedContactIds = new Set(
-      ((existingLinks.data ?? []) as LinkedContactRow[])
+      linkedRows
         .filter((link) => {
           const contact = Array.isArray(link.contacts) ? link.contacts[0] : link.contacts;
           return contact?.phone && blockedPhones.has(String(contact.phone));
@@ -185,8 +207,44 @@ export async function POST(request: NextRequest) {
 
     if (deletedExistingJobs.error) throw deletedExistingJobs.error;
 
+    const diagnostics: ActivationDiagnostics = {
+      requestId,
+      counts: {
+        payloadContacts: payload.contacts.length,
+        payloadJobs: payload.jobs.length,
+        payloadVariants: payload.variants.length,
+        existingLinks: linkedRows.length,
+        linkedByContactId: campaignContactByContactId.size,
+        linkedByPhone: campaignContactByPhone.size,
+        queuedJobsReceived: payload.jobs.filter((job) => job.status === "queued").length,
+        jobsToInsert: 0
+      },
+      droppedJobs: {},
+      samples: []
+    };
+    const dropJob = (
+      reason: string,
+      job: (typeof payload.jobs)[number],
+      contactPhone?: string
+    ) => {
+      diagnostics.droppedJobs[reason] = (diagnostics.droppedJobs[reason] ?? 0) + 1;
+      if (diagnostics.samples.length >= 12) return;
+      diagnostics.samples.push({
+        reason,
+        jobId: job.id,
+        jobContactId: job.contactId,
+        jobContactIdIsUuid: isUuid(job.contactId),
+        variantId: job.variantId,
+        status: job.status,
+        phoneHint: contactPhone ? maskPhone(contactPhone) : null
+      });
+    };
+
     const jobsToInsert = payload.jobs.reduce<JobInsert[]>((jobs, job) => {
-      if (job.status !== "queued") return jobs;
+      if (job.status !== "queued") {
+        dropJob("status_not_queued", job);
+        return jobs;
+      }
 
       const contact = payloadContactById.get(job.contactId);
       const linkedContact = campaignContactByContactId.has(job.contactId)
@@ -200,12 +258,28 @@ export async function POST(request: NextRequest) {
       const campaignContactId = linkedContact?.campaignContactId;
       const messageVariantId = variantMap.get(job.variantId);
 
-      if (
-        !campaignContactId ||
-        !messageVariantId ||
-        (linkedContact?.contactId && blockedContactIds.has(linkedContact.contactId)) ||
-        (contact?.phone && blockedPhones.has(contact.phone))
-      ) {
+      if (!contact && !campaignContactByContactId.has(job.contactId)) {
+        dropJob("missing_payload_contact", job);
+        return jobs;
+      }
+
+      if (!campaignContactId) {
+        dropJob("missing_campaign_contact", job, contact?.phone);
+        return jobs;
+      }
+
+      if (!messageVariantId) {
+        dropJob("missing_message_variant", job, contact?.phone);
+        return jobs;
+      }
+
+      if (linkedContact?.contactId && blockedContactIds.has(linkedContact.contactId)) {
+        dropJob("blocked_contact", job, contact?.phone);
+        return jobs;
+      }
+
+      if (contact?.phone && blockedPhones.has(contact.phone)) {
+        dropJob("blocked_phone", job, contact.phone);
         return jobs;
       }
 
@@ -224,13 +298,33 @@ export async function POST(request: NextRequest) {
 
       return jobs;
     }, []);
+    diagnostics.counts.jobsToInsert = jobsToInsert.length;
+
+    console.log(
+      JSON.stringify({
+        scope: "campaign_activate",
+        phase: "diagnostics",
+        campaignId: payload.campaignId,
+        organizationId,
+        diagnostics
+      })
+    );
 
     if (!jobsToInsert.length) {
+      await logSystemEvent(supabase, {
+        organizationId,
+        campaignId: payload.campaignId,
+        type: "error",
+        title: "Ativacao sem jobs elegiveis",
+        detail: noEligibleJobsError,
+        metadata: diagnostics
+      });
+
       return NextResponse.json(
         {
           ok: false,
-          error:
-            "A campanha não tem contatos elegíveis para envio. Revise contatos, WhatsApp e modelos."
+          error: noEligibleJobsError,
+          diagnostics
         },
         { status: 422 }
       );
@@ -265,7 +359,7 @@ export async function POST(request: NextRequest) {
       type: "campaign",
       title: "Campanha iniciada",
       detail: `${jobsToInsert.length} mensagem(ns) entraram na fila de envio.`,
-      metadata: { queuedJobs: jobsToInsert.length }
+      metadata: { queuedJobs: jobsToInsert.length, activationRequestId: requestId }
     });
 
     return NextResponse.json({
@@ -278,8 +372,27 @@ export async function POST(request: NextRequest) {
     if (authResponse) return authResponse;
 
     const status = error instanceof z.ZodError ? 422 : 500;
+    console.error(
+      JSON.stringify({
+        scope: "campaign_activate",
+        phase: "error",
+        requestId,
+        status,
+        error:
+          error instanceof z.ZodError
+            ? error.issues
+            : error instanceof Error
+              ? error.message
+              : "Unknown error"
+      })
+    );
     return NextResponse.json(
-      { ok: false, error: error instanceof Error ? error.message : "Unknown error" },
+      {
+        ok: false,
+        requestId,
+        error: error instanceof Error ? error.message : "Unknown error",
+        issues: error instanceof z.ZodError ? error.issues : undefined
+      },
       { status }
     );
   }
@@ -289,4 +402,10 @@ function isUuid(value: string) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
     value
   );
+}
+
+function maskPhone(phone: string) {
+  const digits = phone.replace(/\D/g, "");
+  if (digits.length <= 4) return digits;
+  return `***${digits.slice(-4)}`;
 }

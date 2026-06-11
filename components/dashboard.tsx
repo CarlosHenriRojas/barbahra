@@ -789,6 +789,22 @@ export function Dashboard() {
     }
 
     try {
+      console.log("campaign_activate:start", {
+        campaignId: campaign.id,
+        campaignStatus: campaign.status,
+        contacts: contacts.length,
+        jobs: jobs.length,
+        queuedJobs: jobs.filter((job) => job.status === "queued").length,
+        variants: variants.length,
+        sampleJobs: jobs.slice(0, 5).map((job) => ({
+          id: job.id,
+          contactId: job.contactId,
+          contactIdIsUuid: isUuid(job.contactId),
+          variantId: job.variantId,
+          status: job.status
+        }))
+      });
+
       const response = await authFetch("/api/campaigns/activate", {
         method: "POST",
         headers: {
@@ -804,14 +820,30 @@ export function Dashboard() {
       });
 
       const data = await response.json();
+      if (!response.ok || !data.campaignId) {
+        console.error("campaign_activate:failed", {
+          status: response.status,
+          error: data.error,
+          requestId: data.requestId,
+          diagnostics: data.diagnostics,
+          issues: data.issues
+        });
+      }
+
       if (response.ok && data.campaignId) {
         await loadCampaignSnapshot(data.campaignId, "queue");
         await refreshSavedCampaigns();
         return;
       }
-      setPersistenceStatus(data.error ?? "Não foi possível iniciar a campanha.");
+      const droppedJobs = data.diagnostics?.droppedJobs
+        ? ` Motivos: ${JSON.stringify(data.diagnostics.droppedJobs)}`
+        : "";
+      setPersistenceStatus(
+        `${data.error ?? "Não foi possível iniciar a campanha."}${droppedJobs}`
+      );
       return;
-    } catch {
+    } catch (error) {
+      console.error("campaign_activate:exception", error);
       setPersistenceStatus("Não foi possível iniciar a campanha agora.");
     }
   }
