@@ -8,7 +8,9 @@ type ClaimedJob = {
   job_id: string;
   campaign_id: string;
   campaign_contact_id: string;
+  contact_id: string;
   phone: string;
+  whatsapp_status: "unchecked" | "checking" | "valid" | "invalid";
   rendered_message: string;
   message_type: "text" | "buttons";
   buttons: Array<{
@@ -19,6 +21,11 @@ type ClaimedJob = {
     isOptOut?: boolean;
   }>;
 };
+
+type UazapiAdapter = ReturnType<typeof createUazapiAdapter>;
+
+const noWhatsappError = "N\u00famero sem WhatsApp";
+const inconclusiveWhatsappCheckError = "Verifica\u00e7\u00e3o de WhatsApp inconclusiva";
 
 export async function POST(request: NextRequest) {
   if (!isAuthorized(request)) {
@@ -63,16 +70,42 @@ export async function POST(request: NextRequest) {
   for (const job of claimedJobs) {
     const meta = campaignMeta.get(job.campaign_id);
     try {
+      const whatsappCheck = await ensureWhatsappBeforeSend(supabase, adapter, job);
+
+      if (whatsappCheck.status === "invalid") {
+        await markJobAsNoWhatsapp(supabase, job, meta?.organizationId ?? null);
+        bumpRunStat(meta?.organizationId ?? null, "error");
+        results.push({ jobId: job.job_id, status: "no_whatsapp", error: noWhatsappError });
+        continue;
+      }
+
+      if (whatsappCheck.status === "error") {
+        await markJobAsError(supabase, job, whatsappCheck.error);
+        bumpRunStat(meta?.organizationId ?? null, "error");
+        await logSystemEvent(supabase, {
+          organizationId: meta?.organizationId ?? null,
+          campaignId: job.campaign_id,
+          type: "error",
+          title: "Erro na verifica\u00e7\u00e3o de WhatsApp",
+          detail: whatsappCheck.error,
+          phone: job.phone,
+          metadata: { jobId: job.job_id, messageType: job.message_type }
+        });
+        results.push({ jobId: job.job_id, status: "error", error: whatsappCheck.error });
+        continue;
+      }
+
+      const phone = whatsappCheck.phone;
       const providerResult =
         job.message_type === "buttons"
           ? await adapter.sendButtonMessage({
-              phone: job.phone,
+              phone,
               message: job.rendered_message,
               buttons: job.buttons,
               referenceId: job.job_id
             })
           : await adapter.sendTextMessage({
-              phone: job.phone,
+              phone,
               message: job.rendered_message,
               referenceId: job.job_id
             });
@@ -103,7 +136,7 @@ export async function POST(request: NextRequest) {
         type: "sent",
         title: "Mensagem enviada",
         detail: job.rendered_message.slice(0, 200),
-        phone: job.phone,
+        phone,
         metadata: {
           jobId: job.job_id,
           providerMessageId,
@@ -115,20 +148,7 @@ export async function POST(request: NextRequest) {
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown send error";
 
-      await supabase
-        .from("message_jobs")
-        .update({
-          status: "error",
-          error: message,
-          locked_at: null,
-          locked_by: null
-        })
-        .eq("id", job.job_id);
-
-      await supabase
-        .from("campaign_contacts")
-        .update({ status: "error", validation_errors: [message] })
-        .eq("id", job.campaign_contact_id);
+      await markJobAsError(supabase, job, message);
 
       bumpRunStat(meta?.organizationId ?? null, "error");
       await logSystemEvent(supabase, {
@@ -165,6 +185,105 @@ export async function POST(request: NextRequest) {
     claimed: claimedJobs.length,
     results
   });
+}
+
+async function ensureWhatsappBeforeSend(
+  supabase: NonNullable<ReturnType<typeof createServiceSupabaseClient>>,
+  adapter: UazapiAdapter,
+  job: ClaimedJob
+): Promise<
+  | { status: "valid"; phone: string }
+  | { status: "invalid" }
+  | { status: "error"; error: string }
+> {
+  if (job.whatsapp_status === "valid") {
+    return { status: "valid", phone: job.phone };
+  }
+
+  try {
+    const result = await adapter.checkWhatsappNumber({ phone: job.phone });
+
+    if (result.hasWhatsapp === true) {
+      const phone = result.matchedPhone ?? job.phone;
+      const update = await supabase
+        .from("contacts")
+        .update({ whatsapp_status: "valid", phone })
+        .eq("id", job.contact_id);
+
+      if (update.error) throw update.error;
+      return { status: "valid", phone };
+    }
+
+    if (result.hasWhatsapp === false) {
+      return { status: "invalid" };
+    }
+
+    return { status: "error", error: inconclusiveWhatsappCheckError };
+  } catch (error) {
+    return {
+      status: "error",
+      error: error instanceof Error ? error.message : inconclusiveWhatsappCheckError
+    };
+  }
+}
+
+async function markJobAsNoWhatsapp(
+  supabase: NonNullable<ReturnType<typeof createServiceSupabaseClient>>,
+  job: ClaimedJob,
+  organizationId: string | null
+) {
+  await markJobAsStatus(supabase, job, "no_whatsapp", noWhatsappError);
+
+  const contactUpdate = await supabase
+    .from("contacts")
+    .update({ status: "no_whatsapp", whatsapp_status: "invalid" })
+    .eq("id", job.contact_id);
+
+  if (contactUpdate.error) throw contactUpdate.error;
+
+  await logSystemEvent(supabase, {
+    organizationId,
+    campaignId: job.campaign_id,
+    type: "error",
+    title: "N\u00famero sem WhatsApp",
+    detail: noWhatsappError,
+    phone: job.phone,
+    metadata: { jobId: job.job_id, messageType: job.message_type }
+  });
+}
+
+async function markJobAsError(
+  supabase: NonNullable<ReturnType<typeof createServiceSupabaseClient>>,
+  job: ClaimedJob,
+  message: string
+) {
+  await markJobAsStatus(supabase, job, "error", message);
+}
+
+async function markJobAsStatus(
+  supabase: NonNullable<ReturnType<typeof createServiceSupabaseClient>>,
+  job: ClaimedJob,
+  status: "error" | "no_whatsapp",
+  message: string
+) {
+  const jobUpdate = await supabase
+    .from("message_jobs")
+    .update({
+      status,
+      error: message,
+      locked_at: null,
+      locked_by: null
+    })
+    .eq("id", job.job_id);
+
+  if (jobUpdate.error) throw jobUpdate.error;
+
+  const campaignContactUpdate = await supabase
+    .from("campaign_contacts")
+    .update({ status, validation_errors: [message] })
+    .eq("id", job.campaign_contact_id);
+
+  if (campaignContactUpdate.error) throw campaignContactUpdate.error;
 }
 
 export async function GET(request: NextRequest) {

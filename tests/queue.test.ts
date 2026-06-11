@@ -15,6 +15,34 @@ describe("buildCampaignQueue", () => {
     expect(jobs.map((job) => job.status)).toEqual(["queued", "queued", "queued"]);
   });
 
+  it("keeps unchecked contacts in the queue so the worker can verify them at send time", () => {
+    const jobs = buildCampaignQueue({
+      campaign: demoCampaign,
+      contacts: demoContacts.map((contact) => ({
+        ...contact,
+        whatsappStatus: "unchecked" as const
+      })),
+      variants: demoVariants,
+      optedOutPhones: new Set()
+    });
+
+    expect(jobs).toHaveLength(3);
+  });
+
+  it("does not queue contacts already known to be without WhatsApp", () => {
+    const jobs = buildCampaignQueue({
+      campaign: demoCampaign,
+      contacts: demoContacts.map((contact, index) =>
+        index === 0 ? { ...contact, whatsappStatus: "invalid" as const } : contact
+      ),
+      variants: demoVariants,
+      optedOutPhones: new Set()
+    });
+
+    expect(jobs).toHaveLength(2);
+    expect(jobs.map((job) => job.contactId)).not.toContain(demoContacts[0].id);
+  });
+
   it("blocks contacts with opt-out", () => {
     const jobs = buildCampaignQueue({
       campaign: demoCampaign,

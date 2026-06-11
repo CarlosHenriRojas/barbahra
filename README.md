@@ -49,7 +49,8 @@ Em producao, `UAZAPI_WEBHOOK_SECRET` e `CRON_SECRET`/`QUEUE_WORKER_SECRET` devem
 - Criar campanha cria um rascunho no Supabase.
 - Importar contatos persiste a lista na campanha e ignora telefones duplicados.
 - Modelos de mensagem ficam vinculados a campanha aberta.
-- Verificar e aprovar consulta a UAZAPI em `/chat/check` e monta a fila local.
+- Aprovar fila monta os jobs rapidamente; o worker consulta a UAZAPI em `/chat/check`
+  antes de cada envio e pula o job quando o nÃºmero falha na verificaÃ§Ã£o.
 - Iniciar ativa a campanha existente, recria os jobs no banco e nao cria campanha duplicada.
 - O worker `/api/worker/process-queue` envia jobs vencidos pela UAZAPI.
 

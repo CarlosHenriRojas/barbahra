@@ -45,7 +45,6 @@ import type {
   MessageVariant
 } from "@/lib/types";
 import { createBrowserSupabaseClient } from "@/lib/supabase/browser";
-import { verifyContactsForQueueWithProvider } from "@/lib/whatsapp";
 
 type View = "home" | "campaigns" | "import" | "messages" | "queue" | "logs";
 
@@ -109,7 +108,6 @@ export function Dashboard() {
   const [optedOutPhones, setOptedOutPhones] = useState<Set<string>>(new Set());
   const [systemLogs, setSystemLogs] = useState<SystemLogEntry[]>([]);
   const [loadingLogs, setLoadingLogs] = useState(false);
-  const [verifyingWhatsapp, setVerifyingWhatsapp] = useState(false);
   const [savedCampaigns, setSavedCampaigns] = useState<SavedCampaignSummary[]>([]);
   const [loadingSavedCampaigns, setLoadingSavedCampaigns] = useState(false);
   const [persistenceStatus, setPersistenceStatus] = useState("");
@@ -712,19 +710,17 @@ export function Dashboard() {
     }
   }
 
-  async function approveCampaign() {
-    setVerifyingWhatsapp(true);
-    const checkedContacts = await verifyContactsForQueueWithProvider(contacts, authFetch);
+  function approveCampaign() {
     const nextJobs = buildCampaignQueue({
       campaign,
-      contacts: checkedContacts,
+      contacts,
       variants,
       optedOutPhones
     });
 
     setJobs(nextJobs);
     setContacts(
-      checkedContacts.map((contact) => {
+      contacts.map((contact) => {
         const job = nextJobs.find((candidate) => candidate.contactId === contact.id);
         if (job) return { ...contact, status: job.status };
         return contact;
@@ -733,7 +729,6 @@ export function Dashboard() {
     setCampaign((current) => ({ ...current, status: "ready" }));
     setActiveView("queue");
     setUrlState("queue", campaign.id);
-    setVerifyingWhatsapp(false);
   }
 
   async function startCampaign() {
@@ -999,7 +994,7 @@ export function Dashboard() {
         </nav>
 
         <div className="sidebar-footer">
-          Operação com consentimento, opt-out e verificação de WhatsApp antes da fila.
+          Operação com consentimento, opt-out e verificação de WhatsApp antes do envio.
         </div>
       </aside>
 
@@ -1034,11 +1029,11 @@ export function Dashboard() {
             <button
               className="button primary"
               type="button"
-              disabled={!readyToApprove || verifyingWhatsapp}
+              disabled={!readyToApprove}
               onClick={approveCampaign}
             >
               <CheckCircle2 size={18} />
-              {verifyingWhatsapp ? "Verificando..." : "Verificar e aprovar"}
+              Aprovar fila
             </button>
             <button className="button icon-only" type="button" title={userEmail || "Sair"} onClick={handleLogout}>
               <LogOut size={18} />
@@ -1261,8 +1256,8 @@ function HomeView({
           </div>
           <div className="section-body form-grid">
             <div className="notice">
-              A verificação de WhatsApp roda na aprovação da campanha. Contatos sem WhatsApp são
-              marcados e não entram na fila.
+              A verificação de WhatsApp roda antes de cada envio. Contatos sem WhatsApp são
+              marcados e o worker segue para o próximo número.
             </div>
             <div className="form-grid two">
               <Metric label="Arquivo atual" value={importFileName || "-"} />
