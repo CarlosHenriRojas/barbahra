@@ -477,16 +477,17 @@ export function Dashboard() {
         return;
       }
 
-      setPersistenceStatus(
-        data.rescheduledJobs
-          ? `Alterações salvas. ${data.rescheduledJobs} job(s) pendente(s) foram reagendados.`
-          : "Alterações salvas no Supabase."
-      );
+      const savedMessage = data.rescheduledJobs
+        ? `Alterações salvas. ${data.rescheduledJobs} job(s) pendente(s) foram reagendados.`
+        : "Alterações salvas no Supabase.";
+      setPersistenceStatus(savedMessage);
       setSavedCampaigns((current) =>
         current.map((savedCampaign) =>
           savedCampaign.id === campaign.id ? { ...savedCampaign, ...campaign } : savedCampaign
         )
       );
+      await loadCampaignSnapshot(campaign.id, activeView);
+      setPersistenceStatus(savedMessage);
     } catch {
       setPersistenceStatus("Não foi possível salvar a campanha agora.");
     } finally {

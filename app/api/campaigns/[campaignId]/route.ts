@@ -369,14 +369,19 @@ async function rescheduleQueuedJobs(
     startAt: new Date()
   });
 
-  const updates = jobs.map((job, index) => ({
-    id: job.id,
-    scheduled_at: schedule[index]?.scheduledAt.toISOString(),
-    delay_seconds: schedule[index]?.delaySeconds
-  }));
+  for (const [index, job] of jobs.entries()) {
+    const updated = await supabase
+      .from("message_jobs")
+      .update({
+        scheduled_at: schedule[index]?.scheduledAt.toISOString(),
+        delay_seconds: schedule[index]?.delaySeconds
+      })
+      .eq("id", job.id)
+      .eq("status", "queued")
+      .is("locked_at", null);
 
-  const updated = await supabase.from("message_jobs").upsert(updates, { onConflict: "id" });
-  if (updated.error) throw updated.error;
+    if (updated.error) throw updated.error;
+  }
 
-  return updates.length;
+  return jobs.length;
 }
