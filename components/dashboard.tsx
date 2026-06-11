@@ -115,6 +115,7 @@ export function Dashboard() {
   const [persistenceStatus, setPersistenceStatus] = useState("");
   const [campaignDetailsOpen, setCampaignDetailsOpen] = useState(false);
   const [savingCampaign, setSavingCampaign] = useState(false);
+  const [importingContacts, setImportingContacts] = useState(false);
   const [bootstrapping, setBootstrapping] = useState(true);
   const supabaseAuth = useMemo(() => createBrowserSupabaseClient(), []);
 
@@ -127,7 +128,10 @@ export function Dashboard() {
       contact.status !== "no_whatsapp"
   );
   const readyToApprove =
-    validContacts.length > 0 && variants.length > 0 && campaign.status === "draft";
+    validContacts.length > 0 &&
+    variants.length > 0 &&
+    campaign.status === "draft" &&
+    !importingContacts;
 
   useEffect(() => {
     if (!supabaseAuth) {
@@ -629,6 +633,7 @@ export function Dashboard() {
       optedOutPhones
     );
 
+    setImportingContacts(true);
     setContacts(mappedContacts);
     setJobs([]);
     setCampaign((current) => ({ ...current, status: "draft" }));
@@ -679,6 +684,7 @@ export function Dashboard() {
         error instanceof Error ? error.message : "Não foi possível salvar a importação agora."
       );
     } finally {
+      setImportingContacts(false);
       event.target.value = "";
     }
   }
@@ -750,6 +756,11 @@ export function Dashboard() {
   }
 
   function approveCampaign() {
+    if (importingContacts) {
+      setPersistenceStatus("Aguarde a importação terminar antes de aprovar a fila.");
+      return;
+    }
+
     const nextJobs = buildCampaignQueue({
       campaign,
       contacts,
@@ -1072,7 +1083,7 @@ export function Dashboard() {
               onClick={approveCampaign}
             >
               <CheckCircle2 size={18} />
-              Aprovar fila
+              {importingContacts ? "Importando..." : "Aprovar fila"}
             </button>
             <button className="button icon-only" type="button" title={userEmail || "Sair"} onClick={handleLogout}>
               <LogOut size={18} />

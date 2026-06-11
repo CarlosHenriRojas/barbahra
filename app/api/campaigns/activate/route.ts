@@ -110,6 +110,15 @@ export async function POST(request: NextRequest) {
     const campaignContactByContactId = new Map(
       ((existingLinks.data ?? []) as LinkedContactRow[]).map((link) => [link.contact_id, link.id])
     );
+    const campaignContactByPhone = new Map(
+      ((existingLinks.data ?? []) as LinkedContactRow[])
+        .map((link) => {
+          const contact = Array.isArray(link.contacts) ? link.contacts[0] : link.contacts;
+          return contact?.phone ? [String(contact.phone), link] : undefined;
+        })
+        .filter((entry): entry is [string, LinkedContactRow] => Boolean(entry))
+    );
+    const payloadContactById = new Map(payload.contacts.map((contact) => [contact.id, contact]));
     const blockedContactIds = new Set(
       ((existingLinks.data ?? []) as LinkedContactRow[])
         .filter((link) => {
@@ -120,7 +129,16 @@ export async function POST(request: NextRequest) {
     );
 
     for (const contact of payload.contacts) {
-      if (!isUuid(contact.id)) continue;
+      const linkedContact = campaignContactByContactId.has(contact.id)
+        ? { id: contact.id, campaignContactId: campaignContactByContactId.get(contact.id) }
+        : campaignContactByPhone.has(contact.phone)
+          ? {
+              id: campaignContactByPhone.get(contact.phone)?.contact_id,
+              campaignContactId: campaignContactByPhone.get(contact.phone)?.id
+            }
+          : undefined;
+
+      if (!linkedContact?.id || !isUuid(linkedContact.id)) continue;
 
       const contactStatus =
         blockedPhones.has(contact.phone) ||
@@ -141,12 +159,12 @@ export async function POST(request: NextRequest) {
           whatsapp_status: contact.whatsappStatus,
           consent_basis: campaign.data.consent_basis
         })
-        .eq("id", contact.id)
+        .eq("id", linkedContact.id)
         .eq("organization_id", organizationId);
 
       if (contactUpdate.error) throw contactUpdate.error;
 
-      const campaignContactId = campaignContactByContactId.get(contact.id);
+      const campaignContactId = linkedContact.campaignContactId;
       if (campaignContactId) {
         const linkUpdate = await supabase
           .from("campaign_contacts")
@@ -170,10 +188,24 @@ export async function POST(request: NextRequest) {
     const jobsToInsert = payload.jobs.reduce<JobInsert[]>((jobs, job) => {
       if (job.status !== "queued") return jobs;
 
-      const campaignContactId = campaignContactByContactId.get(job.contactId);
+      const contact = payloadContactById.get(job.contactId);
+      const linkedContact = campaignContactByContactId.has(job.contactId)
+        ? { contactId: job.contactId, campaignContactId: campaignContactByContactId.get(job.contactId) }
+        : contact
+          ? {
+              contactId: campaignContactByPhone.get(contact.phone)?.contact_id,
+              campaignContactId: campaignContactByPhone.get(contact.phone)?.id
+            }
+          : undefined;
+      const campaignContactId = linkedContact?.campaignContactId;
       const messageVariantId = variantMap.get(job.variantId);
 
-      if (!campaignContactId || !messageVariantId || blockedContactIds.has(job.contactId)) {
+      if (
+        !campaignContactId ||
+        !messageVariantId ||
+        (linkedContact?.contactId && blockedContactIds.has(linkedContact.contactId)) ||
+        (contact?.phone && blockedPhones.has(contact.phone))
+      ) {
         return jobs;
       }
 
