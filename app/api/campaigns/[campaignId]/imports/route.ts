@@ -75,11 +75,11 @@ export async function POST(
 
     if (batch.error) throw batch.error;
 
-    for (const contact of contactsToImport) {
+    if (contactsToImport.length) {
       const contactUpsert = await supabase
         .from("contacts")
         .upsert(
-          {
+          contactsToImport.map((contact) => ({
             organization_id: campaign.data.organization_id,
             name: contact.name,
             phone: contact.phone,
@@ -87,36 +87,58 @@ export async function POST(
             status: "imported",
             whatsapp_status: contact.whatsappStatus,
             consent_basis: campaign.data.consent_basis
-          },
+          })),
           { onConflict: "organization_id,phone" }
         )
-        .select("id")
-        .single();
+        .select("id,phone");
 
       if (contactUpsert.error) throw contactUpsert.error;
 
-      const campaignContactInsert = await supabase.from("campaign_contacts").upsert(
-        {
-          campaign_id: campaignId,
-          contact_id: contactUpsert.data.id,
-          status: "imported",
-          validation_errors: contact.errors,
-          import_batch_id: batch.data.id
-        },
-        { onConflict: "campaign_id,contact_id" }
+      const contactIdByPhone = new Map(
+        (contactUpsert.data ?? []).map((contact) => [
+          String(contact.phone),
+          String(contact.id)
+        ])
       );
 
-      if (campaignContactInsert.error) throw campaignContactInsert.error;
+      const campaignContacts = contactsToImport.flatMap((contact) => {
+        const contactId = contactIdByPhone.get(contact.phone);
+        return contactId
+          ? [
+              {
+                campaign_id: campaignId,
+                contact_id: contactId,
+                status: "imported",
+                validation_errors: contact.errors,
+                import_batch_id: batch.data.id
+              }
+            ]
+          : [];
+      });
 
-      for (const [fieldKey, fieldValue] of Object.entries(contact.customFields)) {
-        const fieldUpsert = await supabase.from("contact_custom_fields").upsert(
-          {
-            contact_id: contactUpsert.data.id,
-            field_key: fieldKey,
-            field_value: fieldValue
-          },
-          { onConflict: "contact_id,field_key" }
-        );
+      if (campaignContacts.length) {
+        const campaignContactInsert = await supabase
+          .from("campaign_contacts")
+          .upsert(campaignContacts, { onConflict: "campaign_id,contact_id" });
+
+        if (campaignContactInsert.error) throw campaignContactInsert.error;
+      }
+
+      const customFields = contactsToImport.flatMap((contact) => {
+        const contactId = contactIdByPhone.get(contact.phone);
+        if (!contactId) return [];
+
+        return Object.entries(contact.customFields).map(([fieldKey, fieldValue]) => ({
+          contact_id: contactId,
+          field_key: fieldKey,
+          field_value: fieldValue
+        }));
+      });
+
+      if (customFields.length) {
+        const fieldUpsert = await supabase
+          .from("contact_custom_fields")
+          .upsert(customFields, { onConflict: "contact_id,field_key" });
 
         if (fieldUpsert.error) throw fieldUpsert.error;
       }

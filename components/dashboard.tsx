@@ -57,6 +57,8 @@ type CampaignSnapshot = {
   jobs: MessageJob[];
 };
 
+const importChunkSize = 200;
+
 const statusLabels: Record<string, string> = {
   draft: "Rascunho",
   ready: "Pronta",
@@ -606,9 +608,6 @@ export function Dashboard() {
       return;
     }
 
-    const previousContacts = contacts;
-    const previousJobs = jobs;
-    const previousCampaign = campaign;
     const parsed = await parseSpreadsheet(file);
     const guessedName = guessColumn(parsed.headers, ["nome", "name", "cliente", "lead"]);
     const guessedPhone = guessColumn(parsed.headers, ["telefone", "phone", "celular", "whatsapp"]);
@@ -635,48 +634,79 @@ export function Dashboard() {
     setCampaign((current) => ({ ...current, status: "draft" }));
     setActiveView("import");
     setUrlState("import", campaign.id);
+    setPersistenceStatus(`Processando ${mappedContacts.length} contato(s) da planilha...`);
 
     try {
-      const response = await authFetch(`/api/campaigns/${campaign.id}/imports`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          fileName: file.name,
-          contacts: mappedContacts
-        })
-      });
-      const data = (await response.json()) as {
-        ok?: boolean;
-        importedCount?: number;
-        skippedDuplicatesCount?: number;
-        blockedOptOutCount?: number;
-        error?: string;
+      const contactsToPersist = mappedContacts.filter(
+        (contact) => contact.errors.length === 0 && !contact.duplicate
+      );
+      const totals = {
+        importedCount: 0,
+        skippedDuplicatesCount: 0,
+        blockedOptOutCount: 0
       };
 
-      if (!response.ok || !data.ok) {
-        setContacts(previousContacts);
-        setJobs(previousJobs);
-        setCampaign(previousCampaign);
-        setPersistenceStatus(data.error ?? "Não foi possível salvar a importação.");
+      if (!contactsToPersist.length) {
+        setPersistenceStatus("Nenhum contato válido para salvar nesta planilha.");
         return;
       }
 
+      for (let index = 0; index < contactsToPersist.length; index += importChunkSize) {
+        const chunk = contactsToPersist.slice(index, index + importChunkSize);
+        const chunkNumber = Math.floor(index / importChunkSize) + 1;
+        const totalChunks = Math.ceil(contactsToPersist.length / importChunkSize);
+        setPersistenceStatus(
+          `Salvando importação: lote ${chunkNumber}/${totalChunks} (${Math.min(
+            index + chunk.length,
+            contactsToPersist.length
+          )}/${contactsToPersist.length})`
+        );
+
+        const data = await saveImportChunk(file.name, chunk);
+        totals.importedCount += data.importedCount ?? 0;
+        totals.skippedDuplicatesCount += data.skippedDuplicatesCount ?? 0;
+        totals.blockedOptOutCount += data.blockedOptOutCount ?? 0;
+      }
+
       setPersistenceStatus(
-        `Importação salva: ${data.importedCount ?? 0} contato(s), ${
-          data.skippedDuplicatesCount ?? 0
-        } duplicado(s) ignorado(s), ${data.blockedOptOutCount ?? 0} opt-out(s) bloqueado(s).`
+        `Importação salva: ${totals.importedCount} contato(s), ${
+          totals.skippedDuplicatesCount
+        } duplicado(s) ignorado(s), ${totals.blockedOptOutCount} opt-out(s) bloqueado(s).`
       );
       await loadCampaignSnapshot(campaign.id, "import");
-    } catch {
-      setContacts(previousContacts);
-      setJobs(previousJobs);
-      setCampaign(previousCampaign);
-      setPersistenceStatus("Não foi possível salvar a importação agora.");
+    } catch (error) {
+      setPersistenceStatus(
+        error instanceof Error ? error.message : "Não foi possível salvar a importação agora."
+      );
     } finally {
       event.target.value = "";
     }
+  }
+
+  async function saveImportChunk(fileName: string, contactsChunk: Contact[]) {
+    const response = await authFetch(`/api/campaigns/${campaign.id}/imports`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        fileName,
+        contacts: contactsChunk
+      })
+    });
+    const data = (await response.json()) as {
+      ok?: boolean;
+      importedCount?: number;
+      skippedDuplicatesCount?: number;
+      blockedOptOutCount?: number;
+      error?: string;
+    };
+
+    if (!response.ok || !data.ok) {
+      throw new Error(data.error ?? "Não foi possível salvar a importação.");
+    }
+
+    return data;
   }
 
   function updateMapping(nextMapping: ColumnMapping) {
