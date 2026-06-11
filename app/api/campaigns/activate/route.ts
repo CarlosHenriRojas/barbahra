@@ -48,6 +48,7 @@ type ActivationDiagnostics = {
     existingLinks: number;
     linkedByContactId: number;
     linkedByPhone: number;
+    ensuredContacts: number;
     queuedJobsReceived: number;
     jobsToInsert: number;
   };
@@ -64,7 +65,7 @@ export async function POST(request: NextRequest) {
 
     const campaign = await supabase
       .from("campaigns")
-      .select("id,consent_basis")
+      .select("id,organization_id,consent_basis")
       .eq("id", payload.campaignId)
       .eq("organization_id", organizationId)
       .single();
@@ -81,6 +82,15 @@ export async function POST(request: NextRequest) {
     const blockedPhones = new Set(
       (blockedPhonesResult.data ?? []).map((row) => String(row.phone))
     );
+
+    const ensuredContacts = await ensureCampaignContactsFromPayload({
+      supabase,
+      campaignId: payload.campaignId,
+      organizationId: String(campaign.data.organization_id),
+      consentBasis: String(campaign.data.consent_basis),
+      contacts: payload.contacts,
+      blockedPhones
+    });
 
     const variantMap = new Map<string, string>();
     for (const variant of payload.variants) {
@@ -216,6 +226,7 @@ export async function POST(request: NextRequest) {
         existingLinks: linkedRows.length,
         linkedByContactId: campaignContactByContactId.size,
         linkedByPhone: campaignContactByPhone.size,
+        ensuredContacts,
         queuedJobsReceived: payload.jobs.filter((job) => job.status === "queued").length,
         jobsToInsert: 0
       },
@@ -408,4 +419,96 @@ function maskPhone(phone: string) {
   const digits = phone.replace(/\D/g, "");
   if (digits.length <= 4) return digits;
   return `***${digits.slice(-4)}`;
+}
+
+async function ensureCampaignContactsFromPayload({
+  supabase,
+  campaignId,
+  organizationId,
+  consentBasis,
+  contacts,
+  blockedPhones
+}: {
+  supabase: Awaited<ReturnType<typeof requireAuthenticatedRequest>>["supabase"];
+  campaignId: string;
+  organizationId: string;
+  consentBasis: string;
+  contacts: z.infer<typeof activateCampaignSchema>["contacts"];
+  blockedPhones: Set<string>;
+}) {
+  const contactsToEnsure = contacts.filter(
+    (contact) =>
+      contact.errors.length === 0 &&
+      !contact.duplicate &&
+      contact.status !== "opt_out" &&
+      contact.status !== "no_whatsapp" &&
+      !blockedPhones.has(contact.phone)
+  );
+
+  if (!contactsToEnsure.length) return 0;
+
+  const contactUpsert = await supabase
+    .from("contacts")
+    .upsert(
+      contactsToEnsure.map((contact) => ({
+        organization_id: organizationId,
+        name: contact.name,
+        phone: contact.phone,
+        company: contact.company,
+        status: "imported",
+        whatsapp_status: contact.whatsappStatus,
+        consent_basis: consentBasis
+      })),
+      { onConflict: "organization_id,phone" }
+    )
+    .select("id,phone");
+
+  if (contactUpsert.error) throw contactUpsert.error;
+
+  const contactIdByPhone = new Map(
+    (contactUpsert.data ?? []).map((contact) => [String(contact.phone), String(contact.id)])
+  );
+
+  const campaignContacts = contactsToEnsure.flatMap((contact) => {
+    const contactId = contactIdByPhone.get(contact.phone);
+    return contactId
+      ? [
+          {
+            campaign_id: campaignId,
+            contact_id: contactId,
+            status: "imported",
+            validation_errors: contact.errors
+          }
+        ]
+      : [];
+  });
+
+  if (campaignContacts.length) {
+    const campaignContactUpsert = await supabase
+      .from("campaign_contacts")
+      .upsert(campaignContacts, { onConflict: "campaign_id,contact_id" });
+
+    if (campaignContactUpsert.error) throw campaignContactUpsert.error;
+  }
+
+  const customFields = contactsToEnsure.flatMap((contact) => {
+    const contactId = contactIdByPhone.get(contact.phone);
+    if (!contactId) return [];
+
+    return Object.entries(contact.customFields).map(([fieldKey, fieldValue]) => ({
+      contact_id: contactId,
+      field_key: fieldKey,
+      field_value: fieldValue
+    }));
+  });
+
+  if (customFields.length) {
+    const fieldUpsert = await supabase
+      .from("contact_custom_fields")
+      .upsert(customFields, { onConflict: "contact_id,field_key" });
+
+    if (fieldUpsert.error) throw fieldUpsert.error;
+  }
+
+  return campaignContacts.length;
 }
