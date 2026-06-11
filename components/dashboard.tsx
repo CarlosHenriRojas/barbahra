@@ -2226,6 +2226,7 @@ function LogsView({
 
 function formatDateTime(value: string) {
   return new Intl.DateTimeFormat("pt-BR", {
+    timeZone: "America/Sao_Paulo",
     hour: "2-digit",
     minute: "2-digit",
     day: "2-digit",

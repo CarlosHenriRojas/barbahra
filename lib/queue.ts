@@ -8,6 +8,8 @@ import type {
   MessageVariant
 } from "./types";
 
+const defaultSchedulingTimeZone = "America/Sao_Paulo";
+
 export function buildCampaignQueue({
   campaign,
   contacts,
@@ -75,16 +77,18 @@ export function buildQueueSchedule(
   {
     config,
     random = Math.random,
-    startAt = new Date()
+    startAt = new Date(),
+    timeZone = defaultSchedulingTimeZone
   }: {
     config: CampaignSendingConfig;
     random?: () => number;
     startAt?: Date;
+    timeZone?: string;
   }
 ) {
   const normalized = normalizeSendingConfig(config);
   const schedule: Array<{ scheduledAt: Date; delaySeconds: number }> = [];
-  let cursor = alignToSendingWindow(new Date(startAt), normalized);
+  let cursor = alignToSendingWindow(new Date(startAt), normalized, timeZone);
 
   for (let index = 0; index < count; index += 1) {
     const delaySeconds =
@@ -96,7 +100,7 @@ export function buildQueueSchedule(
             random
           );
 
-    cursor = alignToSendingWindow(addSeconds(cursor, delaySeconds), normalized);
+    cursor = alignToSendingWindow(addSeconds(cursor, delaySeconds), normalized, timeZone);
     schedule.push({ scheduledAt: new Date(cursor), delaySeconds });
   }
 
@@ -133,22 +137,70 @@ function eligibleContacts(contacts: Contact[], optedOutPhones: Set<string>) {
   );
 }
 
-function alignToSendingWindow(date: Date, config: CampaignSendingConfig) {
+function alignToSendingWindow(date: Date, config: CampaignSendingConfig, timeZone: string) {
   const [startHour, startMinute] = parseTime(config.dailyStartTime);
   const [endHour, endMinute] = parseTime(config.dailyEndTime);
-  const start = new Date(date);
-  start.setHours(startHour, startMinute, 0, 0);
-  const end = new Date(date);
-  end.setHours(endHour, endMinute, 0, 0);
+  const local = getZonedParts(date, timeZone);
+  const currentMinutes = local.hour * 60 + local.minute;
+  const startMinutes = startHour * 60 + startMinute;
+  const endMinutes = endHour * 60 + endMinute;
 
-  if (date < start) return start;
-  if (date > end || start >= end) {
-    const nextDay = new Date(start);
-    nextDay.setDate(nextDay.getDate() + 1);
-    return nextDay;
+  const start = zonedTimeToDate(
+    local.year,
+    local.month,
+    local.day,
+    startHour,
+    startMinute,
+    timeZone
+  );
+  if (currentMinutes < startMinutes) return start;
+  if (currentMinutes > endMinutes || startMinutes >= endMinutes) {
+    return addDays(start, 1);
   }
 
   return date;
+}
+
+function getZonedParts(date: Date, timeZone: string) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  }).formatToParts(date);
+
+  const value = (type: string) => Number(parts.find((part) => part.type === type)?.value);
+  const hour = value("hour");
+
+  return {
+    year: value("year"),
+    month: value("month"),
+    day: value("day"),
+    hour: hour === 24 ? 0 : hour,
+    minute: value("minute")
+  };
+}
+
+function zonedTimeToDate(
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  minute: number,
+  timeZone: string
+) {
+  const utcGuess = new Date(Date.UTC(year, month - 1, day, hour, minute, 0, 0));
+  const offsetMinutes = getTimeZoneOffsetMinutes(utcGuess, timeZone);
+  return new Date(utcGuess.getTime() - offsetMinutes * 60_000);
+}
+
+function getTimeZoneOffsetMinutes(date: Date, timeZone: string) {
+  const parts = getZonedParts(date, timeZone);
+  const asUtc = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute);
+  return (asUtc - date.getTime()) / 60_000;
 }
 
 function parseTime(value: string) {
@@ -161,6 +213,10 @@ function parseTime(value: string) {
 
 function addSeconds(date: Date, seconds: number) {
   return new Date(date.getTime() + seconds * 1000);
+}
+
+function addDays(date: Date, days: number) {
+  return new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
 }
 
 function randomInt(min: number, max: number, random: () => number) {
