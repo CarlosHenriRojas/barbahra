@@ -3,6 +3,8 @@ import { z } from "zod";
 import { authErrorResponse, requireAuthenticatedRequest } from "@/lib/server/auth";
 import { campaignSnapshotSchema } from "@/lib/server/schemas";
 import { buildQueueSchedule } from "@/lib/queue";
+import { normalizeVariantButtons } from "@/lib/buttons";
+import { renderMessage } from "@/lib/message";
 import {
   isMissingAllocationPercentError,
   withoutAllocationPercent,
@@ -242,13 +244,6 @@ export async function PATCH(
 
     if (campaignUpdate.error) throw campaignUpdate.error;
 
-    const rescheduledJobs = await rescheduleQueuedJobs(supabase, campaignId, {
-      minIntervalSeconds: payload.campaign.sendingConfig.minIntervalSeconds,
-      maxIntervalSeconds: payload.campaign.sendingConfig.maxIntervalSeconds,
-      dailyStartTime: payload.campaign.sendingConfig.dailyStartTime,
-      dailyEndTime: payload.campaign.sendingConfig.dailyEndTime
-    });
-
     for (const variant of payload.variants ?? []) {
       const row: MessageVariantDbRow = {
         campaign_id: campaignId,
@@ -279,7 +274,14 @@ export async function PATCH(
       if (savedVariant.error) throw savedVariant.error;
     }
 
-    return NextResponse.json({ ok: true, rescheduledJobs });
+    const queuedJobsUpdate = await updateQueuedJobs(supabase, campaignId, {
+      minIntervalSeconds: payload.campaign.sendingConfig.minIntervalSeconds,
+      maxIntervalSeconds: payload.campaign.sendingConfig.maxIntervalSeconds,
+      dailyStartTime: payload.campaign.sendingConfig.dailyStartTime,
+      dailyEndTime: payload.campaign.sendingConfig.dailyEndTime
+    });
+
+    return NextResponse.json({ ok: true, ...queuedJobsUpdate });
   } catch (error) {
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;
@@ -345,14 +347,32 @@ function withDefaultAllocation(variants: MessageVariant[]) {
   }));
 }
 
-async function rescheduleQueuedJobs(
+type QueuedJobForUpdate = {
+  id: string;
+  message_variant_id: string;
+  campaign_contacts?:
+    | {
+        contact_id: string;
+        contacts?: ContactRow | ContactRow[] | null;
+      }
+    | Array<{
+        contact_id: string;
+        contacts?: ContactRow | ContactRow[] | null;
+      }>
+    | null;
+  message_variants?: MessageVariantRow | MessageVariantRow[] | null;
+};
+
+async function updateQueuedJobs(
   supabase: Awaited<ReturnType<typeof requireAuthenticatedRequest>>["supabase"],
   campaignId: string,
   sendingConfig: Campaign["sendingConfig"]
 ) {
   const queuedJobs = await supabase
     .from("message_jobs")
-    .select("id")
+    .select(
+      "id,message_variant_id,campaign_contacts(contact_id,contacts(id,name,phone,company,status,whatsapp_status,contact_custom_fields(field_key,field_value))),message_variants(id,label,body,message_type,buttons,allocation_percent)"
+    )
     .eq("campaign_id", campaignId)
     .eq("status", "queued")
     .is("locked_at", null)
@@ -361,20 +381,40 @@ async function rescheduleQueuedJobs(
 
   if (queuedJobs.error) throw queuedJobs.error;
 
-  const jobs = queuedJobs.data ?? [];
-  if (!jobs.length) return 0;
+  const jobs = (queuedJobs.data ?? []) as QueuedJobForUpdate[];
+  if (!jobs.length) return { rescheduledJobs: 0, rerenderedJobs: 0 };
 
   const schedule = buildQueueSchedule(jobs.length, {
     config: sendingConfig,
     startAt: new Date()
   });
 
+  let rerenderedJobs = 0;
+
   for (const [index, job] of jobs.entries()) {
+    const campaignContact = Array.isArray(job.campaign_contacts)
+      ? job.campaign_contacts[0]
+      : job.campaign_contacts;
+    const contactRow = campaignContact
+      ? Array.isArray(campaignContact.contacts)
+        ? campaignContact.contacts[0]
+        : campaignContact.contacts
+      : undefined;
+    const variantRow = Array.isArray(job.message_variants)
+      ? job.message_variants[0]
+      : job.message_variants;
+    const renderedPatch = contactRow && variantRow
+      ? renderQueuedJobPatch(contactRow, variantRow)
+      : {};
+
+    if (contactRow && variantRow) rerenderedJobs += 1;
+
     const updated = await supabase
       .from("message_jobs")
       .update({
         scheduled_at: schedule[index]?.scheduledAt.toISOString(),
-        delay_seconds: schedule[index]?.delaySeconds
+        delay_seconds: schedule[index]?.delaySeconds,
+        ...renderedPatch
       })
       .eq("id", job.id)
       .eq("status", "queued")
@@ -383,5 +423,45 @@ async function rescheduleQueuedJobs(
     if (updated.error) throw updated.error;
   }
 
-  return jobs.length;
+  return { rescheduledJobs: jobs.length, rerenderedJobs };
+}
+
+function renderQueuedJobPatch(contactRow: ContactRow, variantRow: MessageVariantRow) {
+  const variant = normalizeVariantButtons({
+    id: String(variantRow.id),
+    label: String(variantRow.label),
+    body: String(variantRow.body),
+    messageType: variantRow.message_type as MessageType,
+    buttons: readButtons(variantRow.buttons),
+    allocationPercent:
+      typeof variantRow.allocation_percent === "number"
+        ? Number(variantRow.allocation_percent)
+        : 0
+  });
+  const contact = {
+    id: contactRow.id,
+    name: contactRow.name,
+    phone: contactRow.phone,
+    company: contactRow.company ?? undefined,
+    customFields: Object.fromEntries(
+      (contactRow.contact_custom_fields ?? []).map((field) => [
+        field.field_key,
+        field.field_value ?? ""
+      ])
+    ),
+    status: contactRow.status,
+    whatsappStatus: contactRow.whatsapp_status,
+    errors: [],
+    duplicate: false
+  };
+  const rendered = renderMessage(variant.body, contact);
+
+  return {
+    rendered_message: rendered.text,
+    message_type: variant.messageType,
+    buttons: variant.buttons,
+    error: rendered.missing.length
+      ? `Variaveis sem valor: ${rendered.missing.join(", ")}`
+      : null
+  };
 }

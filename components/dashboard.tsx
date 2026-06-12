@@ -470,6 +470,7 @@ export function Dashboard() {
         ok?: boolean;
         error?: string;
         rescheduledJobs?: number;
+        rerenderedJobs?: number;
       };
 
       if (!response.ok || !data.ok) {
@@ -478,7 +479,7 @@ export function Dashboard() {
       }
 
       const savedMessage = data.rescheduledJobs
-        ? `Alterações salvas. ${data.rescheduledJobs} job(s) pendente(s) foram reagendados.`
+        ? `Alterações salvas. ${data.rescheduledJobs} job(s) pendente(s) foram reagendados e ${data.rerenderedJobs ?? 0} mensagem(ns) redefinida(s).`
         : "Alterações salvas no Supabase.";
       setPersistenceStatus(savedMessage);
       setSavedCampaigns((current) =>
