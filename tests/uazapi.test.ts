@@ -7,6 +7,8 @@ afterEach(() => {
   delete process.env.UAZAPI_BASE_URL;
   delete process.env.UAZAPI_TOKEN;
   delete process.env.UAZAPI_CHECK_NUMBER_PATH;
+  delete process.env.UAZAPI_SEND_TEXT_PATH;
+  delete process.env.UAZAPI_SEND_MENU_PATH;
 });
 
 describe("buildUazapiMenuChoices", () => {
@@ -30,6 +32,45 @@ describe("buildUazapiMenuChoices", () => {
 describe("isOptOutMessage", () => {
   it("recognizes the required opt-out button label", () => {
     expect(isOptOutMessage("N\u00e3o receber mais contatos")).toBe(true);
+  });
+});
+
+describe("message typing delay", () => {
+  it("sends text messages after showing typing for six seconds", async () => {
+    process.env.UAZAPI_BASE_URL = "https://instance.uazapi.com";
+    process.env.UAZAPI_TOKEN = "token";
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(response({ ok: true }));
+
+    await createUazapiAdapter().sendTextMessage({
+      phone: "5511999999999",
+      message: "Olá!"
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://instance.uazapi.com/send/text",
+      expect.objectContaining({
+        body: expect.stringContaining('"delay":6000')
+      })
+    );
+  });
+
+  it("sends menu messages after showing typing for six seconds", async () => {
+    process.env.UAZAPI_BASE_URL = "https://instance.uazapi.com";
+    process.env.UAZAPI_TOKEN = "token";
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(response({ ok: true }));
+
+    await createUazapiAdapter().sendButtonMessage({
+      phone: "5511999999999",
+      message: "Escolha uma opção",
+      buttons: [{ id: "reply", label: "Continuar", type: "reply" }]
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://instance.uazapi.com/send/menu",
+      expect.objectContaining({
+        body: expect.stringContaining('"delay":6000')
+      })
+    );
   });
 });
 

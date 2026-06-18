@@ -2,6 +2,8 @@ import { z } from "zod";
 import { isOptOutMessage } from "../opt-out";
 import { buildBrazilianWhatsappCandidates } from "../phone";
 
+const TYPING_DELAY_MS = 6000;
+
 const sendTextSchema = z.object({
   phone: z.string().min(10),
   message: z.string().min(1),
@@ -87,6 +89,7 @@ export function createUazapiAdapter() {
         to: payload.phone,
         text: payload.message,
         message: payload.message,
+        delay: TYPING_DELAY_MS,
         referenceId: payload.referenceId
       });
     },
@@ -99,7 +102,7 @@ export function createUazapiAdapter() {
         text: payload.message,
         choices: buildUazapiMenuChoices(payload.buttons),
         readchat: true,
-        delay: 0,
+        delay: TYPING_DELAY_MS,
         referenceId: payload.referenceId
       });
     },
