@@ -33,6 +33,7 @@ import {
 } from "@/lib/queue";
 import { guessColumn, mapRowsToContacts, parseSpreadsheet } from "@/lib/spreadsheet";
 import { renderMessage } from "@/lib/message";
+import { isRetryableWhatsappDisconnectError } from "@/lib/retryable-errors";
 import type {
   Campaign,
   ColumnMapping,
@@ -115,6 +116,7 @@ export function Dashboard() {
   const [persistenceStatus, setPersistenceStatus] = useState("");
   const [campaignDetailsOpen, setCampaignDetailsOpen] = useState(false);
   const [savingCampaign, setSavingCampaign] = useState(false);
+  const [retryingErrors, setRetryingErrors] = useState(false);
   const [importingContacts, setImportingContacts] = useState(false);
   const [bootstrapping, setBootstrapping] = useState(true);
   const supabaseAuth = useMemo(() => createBrowserSupabaseClient(), []);
@@ -858,6 +860,49 @@ export function Dashboard() {
     }
   }
 
+  async function retryWhatsappDisconnectErrors() {
+    if (!isUuid(campaign.id)) {
+      setPersistenceStatus("Abra a campanha dos erros antes de reenviar.");
+      return;
+    }
+
+    setRetryingErrors(true);
+    try {
+      const response = await authFetch(`/api/campaigns/${campaign.id}/retry-errors`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({})
+      });
+      const data = (await response.json()) as {
+        ok?: boolean;
+        retried?: number;
+        skipped?: number;
+        error?: string;
+      };
+
+      if (!response.ok || !data.ok) {
+        setPersistenceStatus(data.error ?? "Não foi possível reenviar os erros 503.");
+        return;
+      }
+
+      const retried = data.retried ?? 0;
+      const skipped = data.skipped ?? 0;
+      const retryMessage =
+        retried
+          ? `${retried} mensagem(ns) voltaram para a fila.${
+              skipped ? ` ${skipped} foram ignorada(s) por opt-out ou bloqueio.` : ""
+            }`
+          : "Nenhum erro 503 de WhatsApp desconectado está pendente nesta campanha.";
+      await loadCampaignSnapshot(campaign.id, activeView);
+      if (activeView === "logs") await refreshSystemLogs();
+      setPersistenceStatus(retryMessage);
+    } catch {
+      setPersistenceStatus("Não foi possível reenviar os erros 503 agora.");
+    } finally {
+      setRetryingErrors(false);
+    }
+  }
+
   async function pauseCampaign() {
     if (isUuid(campaign.id)) {
       await syncCampaignStatus(campaign.id, "paused");
@@ -1195,6 +1240,8 @@ export function Dashboard() {
             onPause={pauseCampaign}
             onStart={startCampaign}
             onRefresh={refreshOpenCampaign}
+            onRetryDisconnectedErrors={retryWhatsappDisconnectErrors}
+            retryingErrors={retryingErrors}
           />
         )}
         {activeView === "logs" && (
@@ -1202,6 +1249,12 @@ export function Dashboard() {
             logs={systemLogs}
             loading={loadingLogs}
             onRefresh={refreshSystemLogs}
+            onRetryDisconnectedErrors={retryWhatsappDisconnectErrors}
+            retryableCount={jobs.filter(
+              (job) =>
+                job.status === "error" && isRetryableWhatsappDisconnectError(job.error)
+            ).length}
+            retryingErrors={retryingErrors}
           />
         )}
       </section>
@@ -2065,7 +2118,9 @@ function QueueView({
   onCancel,
   onPause,
   onStart,
-  onRefresh
+  onRefresh,
+  onRetryDisconnectedErrors,
+  retryingErrors
 }: {
   campaign: Campaign;
   jobs: MessageJob[];
@@ -2075,12 +2130,17 @@ function QueueView({
   onPause: () => void | Promise<void>;
   onStart: () => void | Promise<void>;
   onRefresh: () => void | Promise<void>;
+  onRetryDisconnectedErrors: () => void | Promise<void>;
+  retryingErrors: boolean;
 }) {
   const contactsWithoutWhatsapp = contacts.filter(
     (contact) => contact.whatsappStatus === "invalid"
   ).length;
   const sentCount = jobs.filter((job) => job.status === "sent").length;
   const queuedCount = jobs.filter((job) => job.status === "queued").length;
+  const retryableCount = jobs.filter(
+    (job) => job.status === "error" && isRetryableWhatsappDisconnectError(job.error)
+  ).length;
 
   return (
     <section className="section">
@@ -2095,6 +2155,16 @@ function QueueView({
           >
             <RefreshCw size={18} />
             Atualizar
+          </button>
+          <button
+            className="button primary"
+            type="button"
+            disabled={!retryableCount || retryingErrors}
+            onClick={onRetryDisconnectedErrors}
+            title="Reenvia somente falhas 503 causadas pela desconexão do WhatsApp"
+          >
+            <RefreshCw size={18} />
+            {retryingErrors ? "Reenfileirando" : `Reenviar erros 503 (${retryableCount})`}
           </button>
           <button
             className="button primary"
@@ -2173,20 +2243,38 @@ function QueueView({
 function LogsView({
   logs,
   loading,
-  onRefresh
+  onRefresh,
+  onRetryDisconnectedErrors,
+  retryableCount,
+  retryingErrors
 }: {
   logs: SystemLogEntry[];
   loading: boolean;
   onRefresh: () => void | Promise<void>;
+  onRetryDisconnectedErrors: () => void | Promise<void>;
+  retryableCount: number;
+  retryingErrors: boolean;
 }) {
   return (
     <section className="section">
       <div className="section-header">
         <h2>Logs do sistema</h2>
-        <button className="button" type="button" onClick={onRefresh} disabled={loading}>
-          <RefreshCw size={18} />
-          {loading ? "Atualizando" : "Atualizar"}
-        </button>
+        <div className="stack">
+          <button
+            className="button primary"
+            type="button"
+            onClick={onRetryDisconnectedErrors}
+            disabled={!retryableCount || retryingErrors}
+            title="Reenvia os erros 503 da campanha aberta"
+          >
+            <RefreshCw size={18} />
+            {retryingErrors ? "Reenfileirando" : `Reenviar erros 503 (${retryableCount})`}
+          </button>
+          <button className="button" type="button" onClick={onRefresh} disabled={loading}>
+            <RefreshCw size={18} />
+            {loading ? "Atualizando" : "Atualizar"}
+          </button>
+        </div>
       </div>
       <div className="table-wrap">
         <table>
