@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { extractProviderMessageId } from "@/lib/server/provider-result";
-import { createUazapiAdapter } from "@/lib/server/uazapi";
+import { createWhatsappProvider } from "@/lib/server/whatsapp-provider";
 import { logSystemEvent } from "@/lib/server/events";
 import { isRetryableWhatsappDisconnectError } from "@/lib/retryable-errors";
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
@@ -23,7 +23,7 @@ type ClaimedJob = {
   }>;
 };
 
-type UazapiAdapter = ReturnType<typeof createUazapiAdapter>;
+type WhatsappProvider = ReturnType<typeof createWhatsappProvider>;
 
 const noWhatsappError = "N\u00famero sem WhatsApp";
 const inconclusiveWhatsappCheckError = "Verifica\u00e7\u00e3o de WhatsApp inconclusiva";
@@ -43,7 +43,7 @@ export async function POST(request: NextRequest) {
 
   const workerId = crypto.randomUUID();
   const batchSize = Number(process.env.QUEUE_WORKER_BATCH_SIZE ?? 5);
-  const adapter = createUazapiAdapter();
+  const provider = createWhatsappProvider();
 
   const claimed = await supabase.rpc("claim_due_message_jobs", {
     worker_id: workerId,
@@ -78,7 +78,7 @@ export async function POST(request: NextRequest) {
     }
 
     try {
-      const whatsappCheck = await ensureWhatsappBeforeSend(supabase, adapter, job);
+      const whatsappCheck = await ensureWhatsappBeforeSend(supabase, provider, job);
 
       if (whatsappCheck.status === "invalid") {
         await markJobAsNoWhatsapp(supabase, job, meta?.organizationId ?? null);
@@ -112,21 +112,21 @@ export async function POST(request: NextRequest) {
       }
 
       const phone = whatsappCheck.phone;
-      const providerResult =
+      const sendResult =
         job.message_type === "buttons"
-          ? await adapter.sendButtonMessage({
+          ? await provider.sendButtonMessage({
               phone,
               message: job.rendered_message,
               buttons: job.buttons,
               referenceId: job.job_id
             })
-          : await adapter.sendTextMessage({
+          : await provider.sendTextMessage({
               phone,
               message: job.rendered_message,
               referenceId: job.job_id
             });
 
-      const providerMessageId = extractProviderMessageId(providerResult);
+      const providerMessageId = extractProviderMessageId(sendResult.data);
 
       await supabase
         .from("message_jobs")
@@ -156,11 +156,13 @@ export async function POST(request: NextRequest) {
         metadata: {
           jobId: job.job_id,
           providerMessageId,
+          provider: sendResult.provider,
+          fallbackReason: sendResult.fallbackReason,
           messageType: job.message_type
         }
       });
 
-      results.push({ jobId: job.job_id, status: "sent" });
+      results.push({ jobId: job.job_id, status: "sent", provider: sendResult.provider });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown send error";
 
@@ -214,7 +216,7 @@ export async function POST(request: NextRequest) {
 
 async function ensureWhatsappBeforeSend(
   supabase: NonNullable<ReturnType<typeof createServiceSupabaseClient>>,
-  adapter: UazapiAdapter,
+  provider: WhatsappProvider,
   job: ClaimedJob
 ): Promise<
   | { status: "valid"; phone: string }
@@ -226,7 +228,7 @@ async function ensureWhatsappBeforeSend(
   }
 
   try {
-    const result = await adapter.checkWhatsappNumber({ phone: job.phone });
+    const { data: result } = await provider.checkWhatsappNumber({ phone: job.phone });
 
     if (result.hasWhatsapp === true) {
       const phone = result.matchedPhone ?? job.phone;

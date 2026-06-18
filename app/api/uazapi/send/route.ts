@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { authErrorResponse, requireAuthenticatedRequest } from "@/lib/server/auth";
-import { createUazapiAdapter } from "@/lib/server/uazapi";
+import { createWhatsappProvider } from "@/lib/server/whatsapp-provider";
 
 const sendRequestSchema = z.object({
   phone: z.string().min(10),
@@ -14,8 +14,8 @@ export async function POST(request: NextRequest) {
   try {
     await requireAuthenticatedRequest(request);
     const payload = sendRequestSchema.parse(await request.json());
-    const data = await createUazapiAdapter().sendTextMessage(payload);
-    return NextResponse.json({ ok: true, data });
+    const result = await createWhatsappProvider().sendTextMessage(payload);
+    return NextResponse.json({ ok: true, ...result });
   } catch (error) {
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;

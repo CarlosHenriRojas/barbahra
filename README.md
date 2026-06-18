@@ -1,6 +1,6 @@
 # Barbahra Prospeccao
 
-MVP web para campanhas de prospeccao com importacao de Excel/CSV, modelos de mensagem, fila aprovada, opt-out e envio pela UAZAPI.
+MVP web para campanhas de prospeccao com importacao de Excel/CSV, modelos de mensagem, fila aprovada, opt-out e envio pela UAZAPI com fallback para Evolution API.
 
 ## Rodando localmente
 
@@ -37,6 +37,12 @@ UAZAPI e worker:
 - `UAZAPI_STATUS_PATH`
 - `UAZAPI_CHECK_NUMBER_PATH`
 - `UAZAPI_WEBHOOK_SECRET`
+- `EVOLUTION_API_URL`
+- `EVOLUTION_API_KEY`
+- `EVOLUTION_INSTANCE_NAME`
+- `EVOLUTION_SEND_TEXT_PATH`
+- `EVOLUTION_SEND_BUTTONS_PATH`
+- `EVOLUTION_CHECK_NUMBER_PATH`
 - `QUEUE_WORKER_SECRET`
 - `QUEUE_WORKER_BATCH_SIZE`
 - `CRON_SECRET`
@@ -52,7 +58,7 @@ Em producao, `UAZAPI_WEBHOOK_SECRET` e `CRON_SECRET`/`QUEUE_WORKER_SECRET` devem
 - Aprovar fila monta os jobs rapidamente; o worker consulta a UAZAPI em `/chat/check`
   antes de cada envio e pula o job quando o nÃºmero falha na verificaÃ§Ã£o.
 - Iniciar ativa a campanha existente, recria os jobs no banco e nao cria campanha duplicada.
-- O worker `/api/worker/process-queue` envia jobs vencidos pela UAZAPI.
+- O worker `/api/worker/process-queue` envia jobs vencidos pela UAZAPI e usa a Evolution API automaticamente quando a chamada principal falha. O provedor efetivo fica registrado no evento de envio.
 
 ## Vercel
 
