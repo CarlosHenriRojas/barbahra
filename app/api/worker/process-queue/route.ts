@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { extractProviderMessageId } from "@/lib/server/provider-result";
 import { createUazapiAdapter } from "@/lib/server/uazapi";
 import { logSystemEvent } from "@/lib/server/events";
+import { isRetryableWhatsappDisconnectError } from "@/lib/retryable-errors";
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
 
 type ClaimedJob = {
@@ -57,6 +58,7 @@ export async function POST(request: NextRequest) {
 
   // Resolve the org/name for each claimed campaign so events stay org-scoped.
   const campaignMeta = await resolveCampaignMeta(supabase, claimedJobs);
+  const pausedCampaignIds = new Set<string>();
   const runStats = new Map<string, { sent: number; error: number }>();
   const bumpRunStat = (orgId: string | null, key: "sent" | "error") => {
     if (!orgId) return;
@@ -69,6 +71,12 @@ export async function POST(request: NextRequest) {
 
   for (const job of claimedJobs) {
     const meta = campaignMeta.get(job.campaign_id);
+    if (pausedCampaignIds.has(job.campaign_id)) {
+      await releaseJobLock(supabase, job.job_id);
+      results.push({ jobId: job.job_id, status: "paused" });
+      continue;
+    }
+
     try {
       const whatsappCheck = await ensureWhatsappBeforeSend(supabase, adapter, job);
 
@@ -81,6 +89,14 @@ export async function POST(request: NextRequest) {
 
       if (whatsappCheck.status === "error") {
         await markJobAsError(supabase, job, whatsappCheck.error);
+        if (isRetryableWhatsappDisconnectError(whatsappCheck.error)) {
+          await pauseCampaignAfterWhatsappDisconnect(
+            supabase,
+            job,
+            meta?.organizationId ?? null
+          );
+          pausedCampaignIds.add(job.campaign_id);
+        }
         bumpRunStat(meta?.organizationId ?? null, "error");
         await logSystemEvent(supabase, {
           organizationId: meta?.organizationId ?? null,
@@ -149,6 +165,15 @@ export async function POST(request: NextRequest) {
       const message = error instanceof Error ? error.message : "Unknown send error";
 
       await markJobAsError(supabase, job, message);
+
+      if (isRetryableWhatsappDisconnectError(message)) {
+        await pauseCampaignAfterWhatsappDisconnect(
+          supabase,
+          job,
+          meta?.organizationId ?? null
+        );
+        pausedCampaignIds.add(job.campaign_id);
+      }
 
       bumpRunStat(meta?.organizationId ?? null, "error");
       await logSystemEvent(supabase, {
@@ -258,6 +283,44 @@ async function markJobAsError(
   message: string
 ) {
   await markJobAsStatus(supabase, job, "error", message);
+}
+
+async function releaseJobLock(
+  supabase: NonNullable<ReturnType<typeof createServiceSupabaseClient>>,
+  jobId: string
+) {
+  const released = await supabase
+    .from("message_jobs")
+    .update({ locked_at: null, locked_by: null })
+    .eq("id", jobId)
+    .eq("status", "queued");
+
+  if (released.error) throw released.error;
+}
+
+async function pauseCampaignAfterWhatsappDisconnect(
+  supabase: NonNullable<ReturnType<typeof createServiceSupabaseClient>>,
+  job: ClaimedJob,
+  organizationId: string | null
+) {
+  const paused = await supabase
+    .from("campaigns")
+    .update({ status: "paused" })
+    .eq("id", job.campaign_id)
+    .eq("status", "running");
+
+  if (paused.error) throw paused.error;
+
+  await logSystemEvent(supabase, {
+    organizationId,
+    campaignId: job.campaign_id,
+    type: "campaign",
+    title: "Campanha pausada por desconexão",
+    detail:
+      "O WhatsApp retornou erro 503 e a campanha foi pausada automaticamente. Reconecte a sessão antes de reenviar os erros.",
+    phone: job.phone,
+    metadata: { jobId: job.job_id, reason: "whatsapp_disconnected_503" }
+  });
 }
 
 async function markJobAsStatus(
