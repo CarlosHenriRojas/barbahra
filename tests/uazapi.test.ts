@@ -9,6 +9,7 @@ afterEach(() => {
   delete process.env.UAZAPI_CHECK_NUMBER_PATH;
   delete process.env.UAZAPI_SEND_TEXT_PATH;
   delete process.env.UAZAPI_SEND_MENU_PATH;
+  delete process.env.UAZAPI_CONNECT_PATH;
 });
 
 describe("buildUazapiMenuChoices", () => {
@@ -36,6 +37,19 @@ describe("isOptOutMessage", () => {
 });
 
 describe("message typing delay", () => {
+  it("requests a QR code from the configured instance connect endpoint", async () => {
+    process.env.UAZAPI_BASE_URL = "https://instance.uazapi.com";
+    process.env.UAZAPI_TOKEN = "token";
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(response({ qrcode: "qr" }));
+
+    await createUazapiAdapter().connectInstance();
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://instance.uazapi.com/instance/connect",
+      expect.objectContaining({ method: "POST", body: "{}" })
+    );
+  });
+
   it("sends text messages after showing typing for six seconds", async () => {
     process.env.UAZAPI_BASE_URL = "https://instance.uazapi.com";
     process.env.UAZAPI_TOKEN = "token";

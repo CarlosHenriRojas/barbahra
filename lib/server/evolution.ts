@@ -32,6 +32,9 @@ export function createEvolutionAdapter() {
     process.env.EVOLUTION_SEND_BUTTONS_PATH ?? "/message/sendButtons/{instance}";
   const checkNumberPath =
     process.env.EVOLUTION_CHECK_NUMBER_PATH ?? "/chat/whatsappNumbers/{instance}";
+  const connectionStatusPath =
+    process.env.EVOLUTION_CONNECTION_STATUS_PATH ?? "/instance/connectionState/{instance}";
+  const connectPath = process.env.EVOLUTION_CONNECT_PATH ?? "/instance/connect/{instance}";
 
   function isConfigured() {
     return Boolean(baseUrl && apiKey && instance);
@@ -41,7 +44,7 @@ export function createEvolutionAdapter() {
     return path.replace("{instance}", encodeURIComponent(instance as string));
   }
 
-  async function request(path: string, body: unknown) {
+  async function request(path: string, body?: unknown) {
     if (!isConfigured()) {
       throw new Error(
         "EVOLUTION_API_URL, EVOLUTION_API_KEY and EVOLUTION_INSTANCE_NAME must be configured on the server."
@@ -49,12 +52,12 @@ export function createEvolutionAdapter() {
     }
 
     const response = await fetch(new URL(resolvePath(path), baseUrl).toString(), {
-      method: "POST",
+      method: body === undefined ? "GET" : "POST",
       headers: {
         "Content-Type": "application/json",
         apikey: apiKey as string
       },
-      body: JSON.stringify(body)
+      body: body === undefined ? undefined : JSON.stringify(body)
     });
     const data = await response.json().catch(() => ({}));
 
@@ -67,6 +70,14 @@ export function createEvolutionAdapter() {
 
   return {
     isConfigured,
+
+    async checkInstanceStatus() {
+      return request(connectionStatusPath);
+    },
+
+    async connectInstance() {
+      return request(connectPath);
+    },
 
     async sendTextMessage(input: z.infer<typeof sendTextSchema>) {
       const payload = sendTextSchema.parse(input);

@@ -13,12 +13,28 @@ afterEach(() => {
     "EVOLUTION_SEND_TEXT_PATH",
     "EVOLUTION_SEND_BUTTONS_PATH",
     "EVOLUTION_CHECK_NUMBER_PATH"
+    ,"EVOLUTION_CONNECTION_STATUS_PATH"
+    ,"EVOLUTION_CONNECT_PATH"
   ]) {
     delete process.env[key];
   }
 });
 
 describe("Evolution adapter", () => {
+  it("requests a QR code from the Evolution 2.3.7 connect endpoint", async () => {
+    configureEvolution();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      response({ base64: "data:image/png;base64,abc" })
+    );
+
+    await createEvolutionAdapter().connectInstance();
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://evolution.example.com/instance/connect/barbahra",
+      expect.objectContaining({ method: "GET" })
+    );
+  });
+
   it("sends text using the configured instance and API key", async () => {
     configureEvolution();
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(

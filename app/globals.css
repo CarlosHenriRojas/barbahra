@@ -463,10 +463,16 @@ tr:hover td {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.025);
+  display: grid;
+  gap: 16px;
+}
+
+.provider-card-header,
+.provider-connection {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 14px;
 }
 
 .provider-card.active {
@@ -516,6 +522,84 @@ tr:hover td {
 
 .provider-primary {
   max-width: 420px;
+}
+
+.connection-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.connection-dot {
+  width: 9px;
+  height: 9px;
+  margin: 0;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.connection-status.connected {
+  color: var(--green);
+}
+
+.connection-status.connected .connection-dot {
+  background: var(--green);
+}
+
+.connection-status.connecting {
+  color: var(--amber);
+}
+
+.connection-status.connecting .connection-dot {
+  background: var(--amber);
+}
+
+.connection-status.disconnected {
+  color: var(--red);
+}
+
+.connection-status.disconnected .connection-dot {
+  background: var(--red);
+}
+
+.qr-panel {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: #111827;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
+.qr-panel img {
+  width: min(240px, 100%);
+  height: auto;
+  flex: 0 0 auto;
+}
+
+.qr-panel span {
+  margin-top: 8px;
+  color: #4b5563;
+  line-height: 1.45;
+}
+
+.pairing-code {
+  padding: 12px;
+  border-radius: 8px;
+  background: var(--surface-3);
+  color: var(--soft);
+  font-size: 14px;
+}
+
+.pairing-code strong {
+  display: inline;
+  color: var(--green);
+  letter-spacing: 0.08em;
 }
 
 .empty {
@@ -729,5 +813,12 @@ tr:hover td {
 
   .provider-grid {
     grid-template-columns: 1fr;
+  }
+
+  .provider-card-header,
+  .provider-connection,
+  .qr-panel {
+    align-items: stretch;
+    flex-direction: column;
   }
 }

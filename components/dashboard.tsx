@@ -25,6 +25,7 @@ import {
   LogOut
 } from "lucide-react";
 import { ChangeEvent, FormEvent, ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import Image from "next/image";
 import { demoVariants } from "@/lib/demo-data";
 import { ensureOptOutButton, optOutButton } from "@/lib/buttons";
 import {
@@ -53,6 +54,12 @@ type View = "home" | "campaigns" | "import" | "messages" | "queue" | "logs" | "s
 type WhatsappIntegrationSettings = {
   primary: "uazapi" | "evolution";
   enabled: { uazapi: boolean; evolution: boolean };
+};
+
+type WhatsappConnection = {
+  status: "connected" | "connecting" | "disconnected" | "unknown";
+  qrCode?: string;
+  pairingCode?: string;
 };
 
 type SavedCampaignSummary = Campaign;
@@ -130,6 +137,14 @@ export function Dashboard() {
   const [loadingIntegrations, setLoadingIntegrations] = useState(false);
   const [savingIntegrations, setSavingIntegrations] = useState(false);
   const [integrationMessage, setIntegrationMessage] = useState("");
+  const [integrationConfigured, setIntegrationConfigured] = useState({
+    uazapi: false,
+    evolution: false
+  });
+  const [providerConnections, setProviderConnections] = useState<
+    Partial<Record<"uazapi" | "evolution", WhatsappConnection>>
+  >({});
+  const [connectingProvider, setConnectingProvider] = useState<"uazapi" | "evolution" | null>(null);
   const [importingContacts, setImportingContacts] = useState(false);
   const [bootstrapping, setBootstrapping] = useState(true);
   const supabaseAuth = useMemo(() => createBrowserSupabaseClient(), []);
@@ -317,18 +332,44 @@ export function Dashboard() {
       const response = await authFetch("/api/integrations/whatsapp");
       const data = (await response.json()) as {
         settings?: WhatsappIntegrationSettings;
+        configured?: { uazapi: boolean; evolution: boolean };
         error?: string;
       };
       if (!response.ok || !data.settings) {
         throw new Error(data.error ?? "Não foi possível carregar as integrações.");
       }
       setIntegrationSettings(data.settings);
+      if (data.configured) setIntegrationConfigured(data.configured);
     } catch (error) {
       setIntegrationMessage(error instanceof Error ? error.message : "Falha ao carregar integrações.");
     } finally {
       setLoadingIntegrations(false);
     }
   }, [authFetch]);
+
+  const refreshProviderConnection = useCallback(
+    async (provider: "uazapi" | "evolution", connect = false, silent = false) => {
+      if (connect) setConnectingProvider(provider);
+      if (!silent) setIntegrationMessage("");
+      try {
+        const response = await authFetch(`/api/integrations/whatsapp/${provider}/connection`, {
+          method: connect ? "POST" : "GET"
+        });
+        const data = (await response.json()) as { connection?: WhatsappConnection; error?: string };
+        if (!response.ok || !data.connection) {
+          throw new Error(data.error ?? "Não foi possível consultar a conexão.");
+        }
+        setProviderConnections((current) => ({ ...current, [provider]: data.connection }));
+      } catch (error) {
+        if (!silent) {
+          setIntegrationMessage(error instanceof Error ? error.message : "Falha ao conectar WhatsApp.");
+        }
+      } finally {
+        if (connect) setConnectingProvider(null);
+      }
+    },
+    [authFetch]
+  );
 
   async function saveIntegrationSettings() {
     setSavingIntegrations(true);
@@ -442,6 +483,23 @@ export function Dashboard() {
     if (!signedIn || activeView !== "settings") return;
     void refreshIntegrationSettings();
   }, [activeView, refreshIntegrationSettings, signedIn]);
+
+  useEffect(() => {
+    if (!signedIn || activeView !== "settings") return;
+    const configuredProviders = (["uazapi", "evolution"] as const).filter(
+      (provider) => integrationConfigured[provider]
+    );
+    if (!configuredProviders.length) return;
+
+    const refresh = () => {
+      for (const provider of configuredProviders) {
+        void refreshProviderConnection(provider, false, true);
+      }
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 5000);
+    return () => window.clearInterval(timer);
+  }, [activeView, integrationConfigured, refreshProviderConnection, signedIn]);
 
   // Keep the queue and home dashboard in sync with the backend worker while a
   // campaign is running, so statuses move from "Na fila" to "Enviado" live.
@@ -1332,7 +1390,11 @@ export function Dashboard() {
             loading={loadingIntegrations}
             saving={savingIntegrations}
             message={integrationMessage}
+            configured={integrationConfigured}
+            connections={providerConnections}
+            connectingProvider={connectingProvider}
             onChange={setIntegrationSettings}
+            onConnect={(provider) => refreshProviderConnection(provider, true)}
             onRefresh={refreshIntegrationSettings}
             onSave={saveIntegrationSettings}
           />
@@ -2398,7 +2460,11 @@ function IntegrationSettingsView({
   loading,
   saving,
   message,
+  configured,
+  connections,
+  connectingProvider,
   onChange,
+  onConnect,
   onRefresh,
   onSave
 }: {
@@ -2406,7 +2472,11 @@ function IntegrationSettingsView({
   loading: boolean;
   saving: boolean;
   message: string;
+  configured: { uazapi: boolean; evolution: boolean };
+  connections: Partial<Record<"uazapi" | "evolution", WhatsappConnection>>;
+  connectingProvider: "uazapi" | "evolution" | null;
   onChange: (settings: WhatsappIntegrationSettings) => void;
+  onConnect: (provider: "uazapi" | "evolution") => void | Promise<void>;
   onRefresh: () => void | Promise<void>;
   onSave: () => void | Promise<void>;
 }) {
@@ -2448,23 +2518,71 @@ function IntegrationSettingsView({
         <div className="provider-grid">
           {(["uazapi", "evolution"] as const).map((provider) => {
             const active = settings.enabled[provider];
+            const isConfigured = configured[provider];
+            const connection = connections[provider];
             const label = provider === "uazapi" ? "Uazapi" : "Evolution API";
             return (
               <article className={`provider-card ${active ? "active" : ""}`} key={provider}>
-                <div>
-                  <strong>{label}</strong>
-                  <span>{active ? "Ativo para envios" : "Desativado"}</span>
+                <div className="provider-card-header">
+                  <div>
+                    <strong>{label}</strong>
+                    <span>
+                      {!isConfigured
+                        ? "Credenciais não configuradas"
+                        : active
+                          ? "Ativo para envios"
+                          : "Desativado para envios"}
+                    </span>
+                  </div>
+                  <button
+                    className={`provider-switch ${active ? "on" : ""}`}
+                    type="button"
+                    role="switch"
+                    aria-checked={active}
+                    aria-label={`${active ? "Desativar" : "Ativar"} ${label}`}
+                    onClick={() => toggle(provider)}
+                  >
+                    <span />
+                  </button>
                 </div>
-                <button
-                  className={`provider-switch ${active ? "on" : ""}`}
-                  type="button"
-                  role="switch"
-                  aria-checked={active}
-                  aria-label={`${active ? "Desativar" : "Ativar"} ${label}`}
-                  onClick={() => toggle(provider)}
-                >
-                  <span />
-                </button>
+                <div className="provider-connection">
+                  <div className={`connection-status ${connection?.status ?? "unknown"}`}>
+                    <span className="connection-dot" />
+                    {connectionStatusLabel(connection?.status, isConfigured)}
+                  </div>
+                  <button
+                    className="button"
+                    type="button"
+                    disabled={!isConfigured || connectingProvider === provider || connection?.status === "connected"}
+                    onClick={() => onConnect(provider)}
+                  >
+                    {connectingProvider === provider
+                      ? "Gerando QR Code"
+                      : connection?.status === "connected"
+                        ? "WhatsApp conectado"
+                        : "Conectar WhatsApp"}
+                  </button>
+                </div>
+                {connection?.qrCode && connection.status !== "connected" && (
+                  <div className="qr-panel">
+                    <Image
+                      src={connection.qrCode}
+                      alt={`QR Code para conectar ${label}`}
+                      width={240}
+                      height={240}
+                      unoptimized
+                    />
+                    <div>
+                      <strong>Escaneie com o WhatsApp</strong>
+                      <span>Abra Aparelhos conectados → Conectar um aparelho.</span>
+                    </div>
+                  </div>
+                )}
+                {connection?.pairingCode && connection.status !== "connected" && (
+                  <div className="pairing-code">
+                    Código de pareamento: <strong>{connection.pairingCode}</strong>
+                  </div>
+                )}
               </article>
             );
           })}
@@ -2486,6 +2604,14 @@ function IntegrationSettingsView({
       </div>
     </section>
   );
+}
+
+function connectionStatusLabel(status: WhatsappConnection["status"] | undefined, configured: boolean) {
+  if (!configured) return "Não configurado";
+  if (status === "connected") return "Conectado";
+  if (status === "connecting") return "Aguardando leitura do QR Code";
+  if (status === "disconnected") return "Desconectado";
+  return "Status ainda não consultado";
 }
 
 function formatDateTime(value: string) {

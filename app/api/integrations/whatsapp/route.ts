@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { authErrorResponse, requireAuthenticatedRequest } from "@/lib/server/auth";
 import type { WhatsappProviderName } from "@/lib/server/whatsapp-provider";
+import { createEvolutionAdapter } from "@/lib/server/evolution";
+import { createUazapiAdapter } from "@/lib/server/uazapi";
 
 const settingsSchema = z
   .object({
@@ -28,7 +30,14 @@ export async function GET(request: NextRequest) {
       .in("provider", ["uazapi", "evolution"]);
 
     if (result.error) throw result.error;
-    return NextResponse.json({ ok: true, settings: settingsFromRows(result.data ?? []) });
+    return NextResponse.json({
+      ok: true,
+      settings: settingsFromRows(result.data ?? []),
+      configured: {
+        uazapi: createUazapiAdapter().isConfigured(),
+        evolution: createEvolutionAdapter().isConfigured()
+      }
+    });
   } catch (error) {
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;

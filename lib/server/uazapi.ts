@@ -48,6 +48,7 @@ export function createUazapiAdapter() {
   const sendMenuPath =
     configuredMenuPath && configuredMenuPath !== "/send/buttons" ? configuredMenuPath : "/send/menu";
   const statusPath = process.env.UAZAPI_STATUS_PATH ?? "/instance/status";
+  const connectPath = process.env.UAZAPI_CONNECT_PATH ?? "/instance/connect";
   const checkNumberPath = process.env.UAZAPI_CHECK_NUMBER_PATH ?? "/chat/check";
 
   function isConfigured() {
@@ -85,6 +86,10 @@ export function createUazapiAdapter() {
 
     async checkInstanceStatus() {
       return request(statusPath);
+    },
+
+    async connectInstance() {
+      return request(connectPath, {});
     },
 
     async sendTextMessage(input: z.infer<typeof sendTextSchema>) {
