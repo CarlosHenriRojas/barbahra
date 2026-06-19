@@ -61,6 +61,7 @@ Em producao, `UAZAPI_WEBHOOK_SECRET` e `CRON_SECRET`/`QUEUE_WORKER_SECRET` devem
 - O worker `/api/worker/process-queue` envia jobs vencidos pela UAZAPI e usa a Evolution API automaticamente quando a chamada principal falha. O provedor efetivo fica registrado no evento de envio.
 - Em **Integrações**, cada provedor pode ser ativado/desativado e Uazapi ou Evolution API 2.3.7 pode ser escolhido como principal. O segundo provedor ativo funciona como fallback.
 - A mesma tela permite consultar a conexão e gerar o QR Code de cada provedor sem expor as credenciais ao navegador.
+- O webhook da Evolution em `/api/evolution/webhook?secret=...` processa `MESSAGES_UPSERT` e registra respostas de opt-out.
 
 ## Vercel
 

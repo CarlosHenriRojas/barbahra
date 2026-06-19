@@ -1,10 +1,4 @@
-export type WhatsappConnectionStatus = "connected" | "connecting" | "disconnected" | "unknown";
-
-export type WhatsappConnection = {
-  status: WhatsappConnectionStatus;
-  qrCode?: string;
-  pairingCode?: string;
-};
+import type { WhatsappConnection, WhatsappConnectionStatus } from "../whatsapp-connection";
 
 export function normalizeWhatsappConnection(payload: unknown): WhatsappConnection {
   const statusValue = readString(payload, [

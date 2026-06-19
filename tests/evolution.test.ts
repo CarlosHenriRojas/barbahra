@@ -21,6 +21,46 @@ afterEach(() => {
 });
 
 describe("Evolution adapter", () => {
+  it("recognizes the opt-out reply button in MESSAGES_UPSERT", () => {
+    const event = createEvolutionAdapter().handleWebhookEvent({
+      event: "messages.upsert",
+      instance: "barbahra",
+      data: {
+        key: {
+          remoteJid: "5511999999999@s.whatsapp.net",
+          fromMe: false,
+          id: "message-id"
+        },
+        message: {
+          buttonsResponseMessage: {
+            selectedButtonId: "opt_out",
+            selectedDisplayText: "Não receber mais contatos"
+          }
+        }
+      }
+    });
+
+    expect(event).toMatchObject({
+      fromPhone: "5511999999999",
+      messageText: "opt_out",
+      messageId: "message-id",
+      isOptOut: true,
+      ignored: false
+    });
+  });
+
+  it("ignores outgoing messages echoed by Evolution", () => {
+    const event = createEvolutionAdapter().handleWebhookEvent({
+      event: "messages.upsert",
+      data: {
+        key: { remoteJid: "5511999999999@s.whatsapp.net", fromMe: true },
+        message: { conversation: "Não receber mais contatos" }
+      }
+    });
+
+    expect(event.ignored).toBe(true);
+  });
+
   it("requests a QR code from the Evolution 2.3.7 connect endpoint", async () => {
     configureEvolution();
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(

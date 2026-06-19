@@ -36,6 +36,7 @@ import {
 import { guessColumn, mapRowsToContacts, parseSpreadsheet } from "@/lib/spreadsheet";
 import { renderMessage } from "@/lib/message";
 import { isRetryableWhatsappDisconnectError } from "@/lib/retryable-errors";
+import { mergeWhatsappConnection, type WhatsappConnection } from "@/lib/whatsapp-connection";
 import type {
   Campaign,
   ColumnMapping,
@@ -54,12 +55,6 @@ type View = "home" | "campaigns" | "import" | "messages" | "queue" | "logs" | "s
 type WhatsappIntegrationSettings = {
   primary: "uazapi" | "evolution";
   enabled: { uazapi: boolean; evolution: boolean };
-};
-
-type WhatsappConnection = {
-  status: "connected" | "connecting" | "disconnected" | "unknown";
-  qrCode?: string;
-  pairingCode?: string;
 };
 
 type SavedCampaignSummary = Campaign;
@@ -359,7 +354,10 @@ export function Dashboard() {
         if (!response.ok || !data.connection) {
           throw new Error(data.error ?? "Não foi possível consultar a conexão.");
         }
-        setProviderConnections((current) => ({ ...current, [provider]: data.connection }));
+        setProviderConnections((current) => ({
+          ...current,
+          [provider]: mergeWhatsappConnection(current[provider], data.connection as WhatsappConnection)
+        }));
       } catch (error) {
         if (!silent) {
           setIntegrationMessage(error instanceof Error ? error.message : "Falha ao conectar WhatsApp.");

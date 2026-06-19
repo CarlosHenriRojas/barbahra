@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { buildBrazilianWhatsappCandidates } from "../phone";
+import { isOptOutMessage } from "../opt-out";
 
 const TYPING_DELAY_MS = 6000;
 
@@ -22,6 +23,16 @@ const sendButtonsSchema = sendTextSchema.extend({
 });
 
 const checkNumberSchema = z.object({ phone: z.string().min(10) });
+const webhookSchema = z.record(z.unknown());
+
+export type EvolutionWebhookResult = {
+  raw: Record<string, unknown>;
+  fromPhone?: string;
+  messageText?: string;
+  messageId?: string;
+  isOptOut: boolean;
+  ignored: boolean;
+};
 
 export function createEvolutionAdapter() {
   const baseUrl = process.env.EVOLUTION_API_URL;
@@ -121,6 +132,51 @@ export function createEvolutionAdapter() {
         matchedPhone: match ? matchedPhone || checkedCandidates[0] : undefined,
         checkedCandidates
       };
+    },
+
+    handleWebhookEvent(payload: unknown): EvolutionWebhookResult {
+      const raw = webhookSchema.parse(payload);
+      const remoteJid = extractString(raw, [
+        "data.key.remoteJid",
+        "data.key.participant",
+        "data.remoteJid",
+        "data.sender",
+        "sender",
+        "key.remoteJid"
+      ]);
+      const selectedButtonId = extractString(raw, [
+        "data.message.buttonsResponseMessage.selectedButtonId",
+        "data.message.templateButtonReplyMessage.selectedId",
+        "data.message.listResponseMessage.singleSelectReply.selectedRowId",
+        "message.buttonsResponseMessage.selectedButtonId"
+      ]);
+      const messageText = selectedButtonId ?? extractString(raw, [
+        "data.message.buttonsResponseMessage.selectedDisplayText",
+        "data.message.templateButtonReplyMessage.selectedDisplayText",
+        "data.message.listResponseMessage.title",
+        "data.message.conversation",
+        "data.message.extendedTextMessage.text",
+        "data.message.imageMessage.caption",
+        "data.body",
+        "body",
+        "message"
+      ]);
+      const messageId = extractString(raw, ["data.key.id", "data.id", "key.id", "messageId"]);
+      const fromMe = extractBoolean(raw, ["data.key.fromMe", "key.fromMe"]) === true;
+      const isGroup = remoteJid?.endsWith("@g.us") ?? false;
+      const fromPhone = remoteJid?.replace(/@.*$/, "").replace(/\D/g, "") || undefined;
+      const isOptOut = Boolean(
+        messageText && (selectedButtonId === "opt_out" || /opt[_-]?out/i.test(messageText) || isOptOutMessage(messageText))
+      );
+
+      return {
+        raw,
+        fromPhone,
+        messageText,
+        messageId,
+        isOptOut,
+        ignored: fromMe || isGroup || !fromPhone || !messageText
+      };
     }
   };
 }
@@ -167,4 +223,27 @@ function readValue(payload: Record<string, unknown>, paths: string[]) {
     if (value !== undefined) return value;
   }
   return undefined;
+}
+
+function extractString(payload: Record<string, unknown>, paths: string[]) {
+  for (const path of paths) {
+    const value = getPath(payload, path);
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+function extractBoolean(payload: Record<string, unknown>, paths: string[]) {
+  for (const path of paths) {
+    const value = getPath(payload, path);
+    if (typeof value === "boolean") return value;
+  }
+  return undefined;
+}
+
+function getPath(payload: Record<string, unknown>, path: string) {
+  return path.split(".").reduce<unknown>((current, key) => {
+    if (!current || typeof current !== "object") return undefined;
+    return (current as Record<string, unknown>)[key];
+  }, payload);
 }
