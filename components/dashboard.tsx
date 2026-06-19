@@ -16,6 +16,7 @@ import {
   RefreshCw,
   Save,
   Send,
+  Settings,
   ShieldCheck,
   Square,
   Upload,
@@ -47,7 +48,12 @@ import type {
 } from "@/lib/types";
 import { createBrowserSupabaseClient } from "@/lib/supabase/browser";
 
-type View = "home" | "campaigns" | "import" | "messages" | "queue" | "logs";
+type View = "home" | "campaigns" | "import" | "messages" | "queue" | "logs" | "settings";
+
+type WhatsappIntegrationSettings = {
+  primary: "uazapi" | "evolution";
+  enabled: { uazapi: boolean; evolution: boolean };
+};
 
 type SavedCampaignSummary = Campaign;
 
@@ -117,6 +123,13 @@ export function Dashboard() {
   const [campaignDetailsOpen, setCampaignDetailsOpen] = useState(false);
   const [savingCampaign, setSavingCampaign] = useState(false);
   const [retryingErrors, setRetryingErrors] = useState(false);
+  const [integrationSettings, setIntegrationSettings] = useState<WhatsappIntegrationSettings>({
+    primary: "uazapi",
+    enabled: { uazapi: true, evolution: true }
+  });
+  const [loadingIntegrations, setLoadingIntegrations] = useState(false);
+  const [savingIntegrations, setSavingIntegrations] = useState(false);
+  const [integrationMessage, setIntegrationMessage] = useState("");
   const [importingContacts, setImportingContacts] = useState(false);
   const [bootstrapping, setBootstrapping] = useState(true);
   const supabaseAuth = useMemo(() => createBrowserSupabaseClient(), []);
@@ -297,6 +310,45 @@ export function Dashboard() {
     }
   }, [authFetch]);
 
+  const refreshIntegrationSettings = useCallback(async () => {
+    setLoadingIntegrations(true);
+    setIntegrationMessage("");
+    try {
+      const response = await authFetch("/api/integrations/whatsapp");
+      const data = (await response.json()) as {
+        settings?: WhatsappIntegrationSettings;
+        error?: string;
+      };
+      if (!response.ok || !data.settings) {
+        throw new Error(data.error ?? "Não foi possível carregar as integrações.");
+      }
+      setIntegrationSettings(data.settings);
+    } catch (error) {
+      setIntegrationMessage(error instanceof Error ? error.message : "Falha ao carregar integrações.");
+    } finally {
+      setLoadingIntegrations(false);
+    }
+  }, [authFetch]);
+
+  async function saveIntegrationSettings() {
+    setSavingIntegrations(true);
+    setIntegrationMessage("");
+    try {
+      const response = await authFetch("/api/integrations/whatsapp", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(integrationSettings)
+      });
+      const data = (await response.json()) as { error?: string };
+      if (!response.ok) throw new Error(data.error ?? "Não foi possível salvar as integrações.");
+      setIntegrationMessage("Configuração de envio salva.");
+    } catch (error) {
+      setIntegrationMessage(error instanceof Error ? error.message : "Falha ao salvar integrações.");
+    } finally {
+      setSavingIntegrations(false);
+    }
+  }
+
   const refreshOpenCampaign = useCallback(async () => {
     if (!isUuid(campaign.id)) return;
 
@@ -385,6 +437,11 @@ export function Dashboard() {
 
     return () => window.clearInterval(timer);
   }, [activeView, refreshSystemLogs, signedIn]);
+
+  useEffect(() => {
+    if (!signedIn || activeView !== "settings") return;
+    void refreshIntegrationSettings();
+  }, [activeView, refreshIntegrationSettings, signedIn]);
 
   // Keep the queue and home dashboard in sync with the backend worker while a
   // campaign is running, so statuses move from "Na fila" to "Enviado" live.
@@ -1128,6 +1185,12 @@ export function Dashboard() {
             label="Logs"
             onClick={() => navigateTo("logs")}
           />
+          <NavItem
+            active={activeView === "settings"}
+            icon={<Settings size={18} />}
+            label="Integrações"
+            onClick={() => navigateTo("settings")}
+          />
         </nav>
 
         <div className="sidebar-footer">
@@ -1138,7 +1201,13 @@ export function Dashboard() {
       <section className="main">
         <header className="topbar">
           <div className="title-block">
-            <h1>{activeView === "home" ? "Painel operacional" : campaign.name}</h1>
+            <h1>
+              {activeView === "home"
+                ? "Painel operacional"
+                : activeView === "settings"
+                  ? "Integrações"
+                  : campaign.name}
+            </h1>
             <p>
               <StatusBadge value={campaign.status} /> {campaign.consentBasis}
             </p>
@@ -1255,6 +1324,17 @@ export function Dashboard() {
                 job.status === "error" && isRetryableWhatsappDisconnectError(job.error)
             ).length}
             retryingErrors={retryingErrors}
+          />
+        )}
+        {activeView === "settings" && (
+          <IntegrationSettingsView
+            settings={integrationSettings}
+            loading={loadingIntegrations}
+            saving={savingIntegrations}
+            message={integrationMessage}
+            onChange={setIntegrationSettings}
+            onRefresh={refreshIntegrationSettings}
+            onSave={saveIntegrationSettings}
           />
         )}
       </section>
@@ -2313,6 +2393,101 @@ function LogsView({
   );
 }
 
+function IntegrationSettingsView({
+  settings,
+  loading,
+  saving,
+  message,
+  onChange,
+  onRefresh,
+  onSave
+}: {
+  settings: WhatsappIntegrationSettings;
+  loading: boolean;
+  saving: boolean;
+  message: string;
+  onChange: (settings: WhatsappIntegrationSettings) => void;
+  onRefresh: () => void | Promise<void>;
+  onSave: () => void | Promise<void>;
+}) {
+  function toggle(provider: "uazapi" | "evolution") {
+    const enabled = { ...settings.enabled, [provider]: !settings.enabled[provider] };
+    if (!enabled.uazapi && !enabled.evolution) return;
+    onChange({
+      enabled,
+      primary: enabled[settings.primary]
+        ? settings.primary
+        : provider === "uazapi"
+          ? "evolution"
+          : "uazapi"
+    });
+  }
+
+  return (
+    <section className="section">
+      <div className="section-header">
+        <div>
+          <h2>Provedores de WhatsApp</h2>
+          <span className="integration-help">Compatível com Evolution API 2.3.7</span>
+        </div>
+        <div className="stack">
+          <button className="button" type="button" onClick={onRefresh} disabled={loading}>
+            <RefreshCw size={18} />
+            Atualizar
+          </button>
+          <button className="button primary" type="button" onClick={onSave} disabled={saving || loading}>
+            <Save size={18} />
+            {saving ? "Salvando" : "Salvar"}
+          </button>
+        </div>
+      </div>
+      <div className="section-body integration-settings">
+        <div className="notice">
+          O principal recebe os envios primeiro. Se ele falhar, o outro provedor ativo assume automaticamente.
+        </div>
+        <div className="provider-grid">
+          {(["uazapi", "evolution"] as const).map((provider) => {
+            const active = settings.enabled[provider];
+            const label = provider === "uazapi" ? "Uazapi" : "Evolution API";
+            return (
+              <article className={`provider-card ${active ? "active" : ""}`} key={provider}>
+                <div>
+                  <strong>{label}</strong>
+                  <span>{active ? "Ativo para envios" : "Desativado"}</span>
+                </div>
+                <button
+                  className={`provider-switch ${active ? "on" : ""}`}
+                  type="button"
+                  role="switch"
+                  aria-checked={active}
+                  aria-label={`${active ? "Desativar" : "Ativar"} ${label}`}
+                  onClick={() => toggle(provider)}
+                >
+                  <span />
+                </button>
+              </article>
+            );
+          })}
+        </div>
+        <div className="field provider-primary">
+          <label htmlFor="primary-provider">Provedor principal</label>
+          <select
+            id="primary-provider"
+            value={settings.primary}
+            onChange={(event) =>
+              onChange({ ...settings, primary: event.target.value as "uazapi" | "evolution" })
+            }
+          >
+            {settings.enabled.uazapi && <option value="uazapi">Uazapi</option>}
+            {settings.enabled.evolution && <option value="evolution">Evolution API</option>}
+          </select>
+        </div>
+        {message && <div className="notice">{message}</div>}
+      </div>
+    </section>
+  );
+}
+
 function formatDateTime(value: string) {
   return new Intl.DateTimeFormat("pt-BR", {
     timeZone: "America/Sao_Paulo",
@@ -2365,7 +2540,8 @@ function parseView(value: string | null): View {
     value === "import" ||
     value === "messages" ||
     value === "queue" ||
-    value === "logs"
+    value === "logs" ||
+    value === "settings"
     ? value
     : "campaigns";
 }

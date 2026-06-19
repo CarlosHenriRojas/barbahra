@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { extractProviderMessageId } from "@/lib/server/provider-result";
-import { createWhatsappProvider } from "@/lib/server/whatsapp-provider";
+import {
+  createWhatsappProvider,
+  defaultWhatsappProviderConfig,
+  type WhatsappProviderConfig,
+  type WhatsappProviderName
+} from "@/lib/server/whatsapp-provider";
 import { logSystemEvent } from "@/lib/server/events";
 import { isRetryableWhatsappDisconnectError } from "@/lib/retryable-errors";
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
@@ -43,8 +48,6 @@ export async function POST(request: NextRequest) {
 
   const workerId = crypto.randomUUID();
   const batchSize = Number(process.env.QUEUE_WORKER_BATCH_SIZE ?? 5);
-  const provider = createWhatsappProvider();
-
   const claimed = await supabase.rpc("claim_due_message_jobs", {
     worker_id: workerId,
     batch_size: batchSize
@@ -58,6 +61,16 @@ export async function POST(request: NextRequest) {
 
   // Resolve the org/name for each claimed campaign so events stay org-scoped.
   const campaignMeta = await resolveCampaignMeta(supabase, claimedJobs);
+  const providerSettings = await resolveProviderSettings(
+    supabase,
+    Array.from(
+      new Set(
+        [...campaignMeta.values()]
+          .map((meta) => meta.organizationId)
+          .filter((id): id is string => Boolean(id))
+      )
+    )
+  );
   const pausedCampaignIds = new Set<string>();
   const runStats = new Map<string, { sent: number; error: number }>();
   const bumpRunStat = (orgId: string | null, key: "sent" | "error") => {
@@ -71,6 +84,11 @@ export async function POST(request: NextRequest) {
 
   for (const job of claimedJobs) {
     const meta = campaignMeta.get(job.campaign_id);
+    const provider = createWhatsappProvider(
+      meta?.organizationId
+        ? providerSettings.get(meta.organizationId) ?? defaultWhatsappProviderConfig
+        : defaultWhatsappProviderConfig
+    );
     if (pausedCampaignIds.has(job.campaign_id)) {
       await releaseJobLock(supabase, job.job_id);
       results.push({ jobId: job.job_id, status: "paused" });
@@ -419,4 +437,41 @@ async function completeCampaignsWithoutQueuedJobs(supabase: ReturnType<typeof cr
       });
     }
   }
+}
+
+async function resolveProviderSettings(
+  supabase: NonNullable<ReturnType<typeof createServiceSupabaseClient>>,
+  organizationIds: string[]
+) {
+  const settings = new Map<string, WhatsappProviderConfig>();
+  if (!organizationIds.length) return settings;
+
+  const result = await supabase
+    .from("integration_settings")
+    .select("organization_id,provider,enabled,priority")
+    .in("organization_id", organizationIds)
+    .in("provider", ["uazapi", "evolution"]);
+
+  if (result.error) throw result.error;
+
+  for (const organizationId of organizationIds) {
+    const rows = (result.data ?? []).filter(
+      (row) => String(row.organization_id) === organizationId && isProviderName(row.provider)
+    ) as Array<{ provider: WhatsappProviderName; enabled: boolean; priority: number }>;
+    if (!rows.length) continue;
+
+    settings.set(organizationId, {
+      primary: [...rows].sort((a, b) => a.priority - b.priority)[0].provider,
+      enabled: {
+        uazapi: rows.find((row) => row.provider === "uazapi")?.enabled ?? false,
+        evolution: rows.find((row) => row.provider === "evolution")?.enabled ?? false
+      }
+    });
+  }
+
+  return settings;
+}
+
+function isProviderName(provider: unknown): provider is WhatsappProviderName {
+  return provider === "uazapi" || provider === "evolution";
 }

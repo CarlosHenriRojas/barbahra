@@ -439,6 +439,85 @@ tr:hover td {
   font-size: 14px;
 }
 
+.integration-settings {
+  display: grid;
+  gap: 18px;
+}
+
+.integration-help {
+  display: block;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.provider-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.provider-card {
+  min-height: 88px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.025);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.provider-card.active {
+  border-color: rgba(33, 199, 138, 0.48);
+  background: var(--green-2);
+}
+
+.provider-card strong,
+.provider-card span {
+  display: block;
+}
+
+.provider-card span {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.provider-switch {
+  width: 52px;
+  height: 30px;
+  flex: 0 0 auto;
+  padding: 3px;
+  border: 1px solid var(--line-2);
+  border-radius: 999px;
+  background: var(--surface-3);
+}
+
+.provider-switch span {
+  width: 22px;
+  height: 22px;
+  margin: 0;
+  border-radius: 50%;
+  background: var(--muted);
+  transition: transform 160ms ease, background 160ms ease;
+}
+
+.provider-switch.on {
+  border-color: var(--green);
+  background: rgba(33, 199, 138, 0.22);
+}
+
+.provider-switch.on span {
+  background: var(--green);
+  transform: translateX(20px);
+}
+
+.provider-primary {
+  max-width: 420px;
+}
+
 .empty {
   padding: 42px 16px;
   text-align: center;
@@ -594,7 +673,7 @@ tr:hover td {
   }
 
   .nav-list {
-    grid-template-columns: repeat(6, minmax(0, 1fr));
+    grid-template-columns: repeat(7, minmax(0, 1fr));
   }
 
   .nav-item {
@@ -645,6 +724,10 @@ tr:hover td {
   }
 
   .grid.columns-4 {
+    grid-template-columns: 1fr;
+  }
+
+  .provider-grid {
     grid-template-columns: 1fr;
   }
 }

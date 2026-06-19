@@ -74,8 +74,7 @@ export function createEvolutionAdapter() {
         number: payload.phone,
         text: payload.message,
         delay: TYPING_DELAY_MS,
-        presence: "composing",
-        referenceId: payload.referenceId
+        presence: "composing"
       });
     },
 
@@ -87,8 +86,7 @@ export function createEvolutionAdapter() {
         description: payload.message,
         footer: "",
         buttons: payload.buttons.map(toEvolutionButton),
-        delay: TYPING_DELAY_MS,
-        referenceId: payload.referenceId
+        delay: TYPING_DELAY_MS
       });
     },
 

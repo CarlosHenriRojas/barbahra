@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { authErrorResponse, requireAuthenticatedRequest } from "@/lib/server/auth";
-import { createWhatsappProvider } from "@/lib/server/whatsapp-provider";
+import {
+  createWhatsappProvider,
+  defaultWhatsappProviderConfig,
+  type WhatsappProviderName
+} from "@/lib/server/whatsapp-provider";
 
 const sendRequestSchema = z.object({
   phone: z.string().min(10),
@@ -12,9 +16,29 @@ const sendRequestSchema = z.object({
 
 export async function POST(request: NextRequest) {
   try {
-    await requireAuthenticatedRequest(request);
+    const { organizationId, supabase } = await requireAuthenticatedRequest(request);
     const payload = sendRequestSchema.parse(await request.json());
-    const result = await createWhatsappProvider().sendTextMessage(payload);
+    const savedSettings = await supabase
+      .from("integration_settings")
+      .select("provider,enabled,priority")
+      .eq("organization_id", organizationId)
+      .in("provider", ["uazapi", "evolution"]);
+    if (savedSettings.error) throw savedSettings.error;
+
+    const rows = (savedSettings.data ?? []).filter(
+      (row): row is typeof row & { provider: WhatsappProviderName } =>
+        row.provider === "uazapi" || row.provider === "evolution"
+    );
+    const config = rows.length
+      ? {
+          primary: [...rows].sort((a, b) => a.priority - b.priority)[0].provider,
+          enabled: {
+            uazapi: rows.find((row) => row.provider === "uazapi")?.enabled ?? false,
+            evolution: rows.find((row) => row.provider === "evolution")?.enabled ?? false
+          }
+        }
+      : defaultWhatsappProviderConfig;
+    const result = await createWhatsappProvider(config).sendTextMessage(payload);
     return NextResponse.json({ ok: true, ...result });
   } catch (error) {
     const authResponse = authErrorResponse(error);

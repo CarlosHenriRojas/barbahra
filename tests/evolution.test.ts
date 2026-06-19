@@ -65,6 +65,41 @@ describe("Evolution adapter", () => {
 });
 
 describe("WhatsApp provider fallback", () => {
+  it("uses Evolution first when it is selected as primary", async () => {
+    process.env.UAZAPI_BASE_URL = "https://uazapi.example.com";
+    process.env.UAZAPI_TOKEN = "uazapi-key";
+    configureEvolution();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      response({ key: { id: "evo-primary" } })
+    );
+
+    const result = await createWhatsappProvider({
+      primary: "evolution",
+      enabled: { evolution: true, uazapi: true }
+    }).sendTextMessage({ phone: "5511999999999", message: "Olá" });
+
+    expect(result.provider).toBe("evolution");
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "https://evolution.example.com/message/sendText/barbahra"
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not call a disabled provider", async () => {
+    process.env.UAZAPI_BASE_URL = "https://uazapi.example.com";
+    process.env.UAZAPI_TOKEN = "uazapi-key";
+    configureEvolution();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(response({ id: "uazapi" }));
+
+    const result = await createWhatsappProvider({
+      primary: "uazapi",
+      enabled: { uazapi: true, evolution: false }
+    }).sendTextMessage({ phone: "5511999999999", message: "Olá" });
+
+    expect(result.provider).toBe("uazapi");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("uses Evolution when Uazapi returns an explicit failure", async () => {
     process.env.UAZAPI_BASE_URL = "https://uazapi.example.com";
     process.env.UAZAPI_TOKEN = "uazapi-key";

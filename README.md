@@ -59,6 +59,7 @@ Em producao, `UAZAPI_WEBHOOK_SECRET` e `CRON_SECRET`/`QUEUE_WORKER_SECRET` devem
   antes de cada envio e pula o job quando o nÃºmero falha na verificaÃ§Ã£o.
 - Iniciar ativa a campanha existente, recria os jobs no banco e nao cria campanha duplicada.
 - O worker `/api/worker/process-queue` envia jobs vencidos pela UAZAPI e usa a Evolution API automaticamente quando a chamada principal falha. O provedor efetivo fica registrado no evento de envio.
+- Em **Integrações**, cada provedor pode ser ativado/desativado e Uazapi ou Evolution API 2.3.7 pode ser escolhido como principal. O segundo provedor ativo funciona como fallback.
 
 ## Vercel
 

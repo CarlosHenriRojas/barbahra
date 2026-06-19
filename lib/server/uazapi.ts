@@ -50,8 +50,12 @@ export function createUazapiAdapter() {
   const statusPath = process.env.UAZAPI_STATUS_PATH ?? "/instance/status";
   const checkNumberPath = process.env.UAZAPI_CHECK_NUMBER_PATH ?? "/chat/check";
 
+  function isConfigured() {
+    return Boolean(baseUrl && token);
+  }
+
   function assertConfigured() {
-    if (!baseUrl || !token) {
+    if (!isConfigured()) {
       throw new Error("UAZAPI_BASE_URL and UAZAPI_TOKEN must be configured on the server.");
     }
   }
@@ -77,6 +81,8 @@ export function createUazapiAdapter() {
   }
 
   return {
+    isConfigured,
+
     async checkInstanceStatus() {
       return request(statusPath);
     },
