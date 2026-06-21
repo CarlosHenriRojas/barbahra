@@ -102,12 +102,13 @@ export function createEvolutionAdapter() {
 
     async sendButtonMessage(input: z.infer<typeof sendButtonsSchema>) {
       const payload = sendButtonsSchema.parse(input);
+      const buttonMessage = buildEvolutionButtonMessage(payload.message, payload.buttons);
       return request(sendButtonsPath, {
         number: payload.phone,
         title: "",
-        description: payload.message,
+        description: buttonMessage.description,
         footer: "",
-        buttons: payload.buttons.map(toEvolutionButton),
+        buttons: buttonMessage.buttons,
         delay: TYPING_DELAY_MS
       });
     },
@@ -179,6 +180,40 @@ export function createEvolutionAdapter() {
       };
     }
   };
+}
+
+export function buildEvolutionButtonMessage(
+  message: string,
+  buttons: Array<z.infer<typeof buttonSchema>>
+) {
+  const replyButtons = buttons.filter((button) => button.type === "reply");
+  const actionButtons = buttons.filter((button) => button.type !== "reply");
+
+  if (!replyButtons.length || !actionButtons.length) {
+    return {
+      description: message,
+      buttons: buttons.map(toEvolutionButton)
+    };
+  }
+
+  const actionLines = actionButtons
+    .map(formatEvolutionActionLine)
+    .filter((line): line is string => Boolean(line));
+
+  return {
+    description: actionLines.length ? `${message}\n\n${actionLines.join("\n")}` : message,
+    buttons: replyButtons.map(toEvolutionButton)
+  };
+}
+
+function formatEvolutionActionLine(button: z.infer<typeof buttonSchema>) {
+  const label = button.label.trim();
+  const value = button.value?.trim();
+  if (!value) return undefined;
+  if (button.type === "url") return `Link — ${label}: ${value}`;
+  if (button.type === "call") return `Telefone — ${label}: ${value}`;
+  if (button.type === "copy") return `Código — ${label}: ${value}`;
+  return undefined;
 }
 
 function toEvolutionButton(button: z.infer<typeof buttonSchema>) {

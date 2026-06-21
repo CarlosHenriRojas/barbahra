@@ -95,7 +95,7 @@ describe("Evolution adapter", () => {
     );
   });
 
-  it("maps all supported button types to Evolution fields", async () => {
+  it("keeps reply buttons native and moves mixed actions into the message text", async () => {
     configureEvolution();
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(response({ ok: true }));
 
@@ -104,6 +104,7 @@ describe("Evolution adapter", () => {
       message: "Escolha",
       buttons: [
         { id: "reply", label: "Responder", type: "reply" },
+        { id: "opt_out", label: "Não receber mais contatos", type: "reply", isOptOut: true },
         { id: "site", label: "Site", type: "url", value: "https://example.com" },
         { id: "call", label: "Ligar", type: "call", value: "+5511999999999" },
         { id: "copy", label: "Copiar", type: "copy", value: "ABC" }
@@ -113,10 +114,28 @@ describe("Evolution adapter", () => {
     const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
     expect(body.buttons).toEqual([
       { type: "reply", displayText: "Responder", id: "reply" },
-      { type: "url", displayText: "Site", url: "https://example.com" },
-      { type: "call", displayText: "Ligar", phoneNumber: "+5511999999999" },
-      { type: "copy", displayText: "Copiar", copyCode: "ABC" }
+      { type: "reply", displayText: "Não receber mais contatos", id: "opt_out" }
     ]);
+    expect(body.description).toBe(
+      "Escolha\n\nLink — Site: https://example.com\nTelefone — Ligar: +5511999999999\nCódigo — Copiar: ABC"
+    );
+  });
+
+  it("keeps homogeneous non-reply buttons native", async () => {
+    configureEvolution();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(response({ ok: true }));
+
+    await createEvolutionAdapter().sendButtonMessage({
+      phone: "5511999999999",
+      message: "Acesse",
+      buttons: [{ id: "site", label: "Site", type: "url", value: "https://example.com" }]
+    });
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(body.buttons).toEqual([
+      { type: "url", displayText: "Site", url: "https://example.com" }
+    ]);
+    expect(body.description).toBe("Acesse");
   });
 });
 
